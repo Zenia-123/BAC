@@ -170,6 +170,10 @@ dmypy.json
 *.tiff
 *.ico
 
+# Allow figure folder images for README
+!figure/
+!figure/*
+
 *.pkl
 *.pickle
 *.pickle.gz
