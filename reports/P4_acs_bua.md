@@ -6,7 +6,7 @@ GPU：NVIDIA GeForce RTX 5070 Ti Laptop GPU；torch：2.11.0+cu128；权重来�
 
 观测来源：`environment`，形状 `[3, 3, 16]`；校准环境 seed 0，验证环境 seeds `[10000, 10001, 10002]`；校准噪声 seed 11，验证噪声 seeds `[101, 102, 103]`。
 
-本机原始结果：`results/lowdim_fp16_20261017_full`。小型完整证据：[summary.json](lowdim_fp16/summary.json)。
+本机原始结果：`results/lowdim_fp16_my_run`。小型完整证据：[summary.json](lowdim_fp16/summary.json)。
 
 沿用项目 OptimalCacheScheduler 的分段动态规划和 BUA 下游 FFN 调度并集传播。校准特征按真实 FP32/AMP 路径采集，余弦矩阵与分支 L1 排序统计使用 FP32。BUA block 采用仓库原有跨时间特征 L1 定义；未将该定义冒充任务误差排名。
 

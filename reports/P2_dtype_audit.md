@@ -6,7 +6,7 @@ GPU：NVIDIA GeForce RTX 5070 Ti Laptop GPU；torch：2.11.0+cu128；权重来�
 
 观测来源：`environment`，形状 `[3, 3, 16]`；校准环境 seed 0，验证环境 seeds `[10000, 10001, 10002]`；校准噪声 seed 11，验证噪声 seeds `[101, 102, 103]`。
 
-本机原始结果：`results/lowdim_fp16_20261017_full`。小型完整证据：[summary.json](lowdim_fp16/summary.json)。
+本机原始结果：`results/lowdim_fp16_my_run`。小型完整证据：[summary.json](lowdim_fp16/summary.json)。
 
 两种精度均使用 FP32 参数。采样时模型入口与条件为 FP32，Transformer 内开启或关闭 autocast，原始输出在 AMP 下为 FP16，交给 Scheduler 前转回 FP32。Scheduler 的输入、输出和轨迹均检查为 FP32，且位于 autocast 外。
 
