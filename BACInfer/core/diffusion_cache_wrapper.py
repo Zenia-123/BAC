@@ -12,8 +12,8 @@ from diffusion_policy.model.diffusion.transformer_for_diffusion import Transform
 logger = logging.getLogger(__name__)
 
 class FastDiffusionPolicy:
-
-    @staticmethod
+    ##  修改传入的Policy对象，给Policy安装缓存执行逻辑
+    @staticmethod##静态方法，可以不创建对象直接 FastDiffusionPolicy.apply_cache（policy，）
     def apply_cache(policy,
                    cache_threshold: int = 5,
                    optimal_steps_dir: str = None,
@@ -30,39 +30,39 @@ class FastDiffusionPolicy:
             logger.info("Using original mode, no caching applied")
             return policy
 
-        assert hasattr(policy, 'model')
+        assert hasattr(policy, 'model')     #判断对象是否存在model属性
         model = policy.model
-        assert isinstance(model, TransformerForDiffusion)
+        assert isinstance(model, TransformerForDiffusion)  
         num_inference_steps = policy.num_inference_steps
 
         cache = {
-            'threshold': cache_threshold,
+            'threshold': cache_threshold, #缓存复用的判据
             'mode': cache_mode,
             'metric': metric,
-            'optimal_steps_dir': optimal_steps_dir,
+            'optimal_steps_dir': optimal_steps_dir,#最优调度文件目录
             'num_caches': num_caches,
-            'num_steps': num_inference_steps,
-            'current_step': -1,
-            'block_cache': {},
-            'block_steps': {},
-            'num_bu_blocks': num_bu_blocks,
+            'num_steps': num_inference_steps,#总去噪数目
+            'current_step': -1,#当前去噪信号
+            'block_cache': {},#保存个模块的缓存输出，{层名：特征}
+            'block_steps': {},#各模块应该在哪些步骤更新
+            'num_bu_blocks': num_bu_blocks,    #可复用块的数量
         }
-        policy._cache = cache
+        policy._cache = cache # 动态给policy对象添加了一个_cache属性
 
         # Find all cacheable transformer layers
-        cacheable_layers = FastDiffusionPolicy._find_cacheable_layers(model)
+        cacheable_layers = FastDiffusionPolicy._find_cacheable_layers(model)  #遍历模型，找到适合做缓存的Transformer层
         policy._cacheable_layers = cacheable_layers
         logger.info(f"Found {len(cacheable_layers)} cacheable Transformer layers")
 
         # Load optimal schedules for optimal mode
         if cache_mode == 'optimal' and optimal_steps_dir:
             # Load per-block optimal cache update schedules
-            FastDiffusionPolicy._load_block_optimal_steps(cache, cacheable_layers, optimal_steps_dir, num_caches, metric)
+            FastDiffusionPolicy._load_block_optimal_steps(cache, cacheable_layers, optimal_steps_dir, num_caches, metric)# 加载每个block的最优缓存调度
             cache_threshold = None
 
         # Add caching functionality to each layer
         for layer_name, layer in cacheable_layers:
-            FastDiffusionPolicy._add_cache_to_block(layer, layer_name, cache)
+            FastDiffusionPolicy._add_cache_to_block(layer, layer_name, cache) #需要更新，计算结果存进cache['block_cache'][layer_name];不更新结果直接返回cache[‘block_cache'][layer_name]
 
         # Save original forward method
         original_forward = model.forward
@@ -77,7 +77,7 @@ class FastDiffusionPolicy:
             current_step = cache['current_step']
 
             # Update cache flags for all blocks at current step
-            FastDiffusionPolicy._update_cache_flags(cache, current_step)
+            FastDiffusionPolicy._update_cache_flags(cache, current_step)# 更新当前时间步所有模块的执行状态
 
             # Execute forward pass with caching
             output = original_forward(sample, timestep, cond, **kwargs)
@@ -85,9 +85,9 @@ class FastDiffusionPolicy:
             return output
 
         # Replace model's forward method
-        model.forward = types.MethodType(forward_with_cache, model)
+        model.forward = types.MethodType(forward_with_cache, model)#将新函数绑定到当前模型对象
 
-        # Add cache reset method
+        # Add cache reset method，避免两个动作之间复用错误旧特征
         def reset_cache(self):
 
             if hasattr(self, '_cache'):
@@ -307,6 +307,17 @@ class FastDiffusionPolicy:
 
         cache['block_steps'] = block_steps
         logger.info(f"Loaded optimal steps for {len(block_steps)} computational blocks")
+        # Fail loudly instead of silently running without any caching:
+        # an empty schedule means every block recomputes every step and the
+        # benchmark measures ~1.0x speedup that looks like a "successful" run.
+        if len(block_steps) == 0:
+            raise ValueError(
+                f"No optimal steps files found under '{steps_dir}'. "
+                f"Expected per-module subdirectories like "
+                f"'{steps_dir}/<module_name>/optimal_steps_<module_name>_{num_caches}_{metric}.pkl'. "
+                f"Hint: optimal_steps_dir must point at the metric subdirectory, "
+                f"e.g. '.../original/optimal_steps/{metric}'."
+            )
 
     @staticmethod
     def _update_cache_flags(cache: Dict, current_step: int):

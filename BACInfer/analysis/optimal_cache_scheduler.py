@@ -64,6 +64,7 @@ class OptimalCacheScheduler:
                 # Compute similarity sum for interval [a,b]
                 cost[a, b] = sum(self.similarity_matrix[a, t] for t in range(a, b+1))
 
+
         # Determine whether to minimize or maximize
         minimize = self.metric in ['mse', 'l1', '12','wasserstein']
 
@@ -81,20 +82,20 @@ class OptimalCacheScheduler:
 
         # Initialize: case with only one cache point (i.e., initial point)
         for i in range(n_steps):
-            dp[1, i] = cost[0, i]
+            dp[1, i] = cost[0, i]    #只有一次机会算，之后全抄
 
         # Fill DP table
-        for k in range(2, num_caches+1):
-            for i in range(k-1, n_steps):
-                if minimize:
+        for k in range(2, num_caches+1): # 更新次数
+            for i in range(k-1, n_steps):  # 覆盖到i步
+                if minimize:   
                     best_val = float('inf')
                 else:
                     best_val = -float('inf')
                 best_j = 0
 
                 # Enumerate end point j of the first k-1 segments
-                for j in range(k-2, i):
-                    val = dp[k-1, j] + cost[j+1, i]
+                for j in range(k-2, i):  #枚举前 k-1 次更新覆盖到第 j 步"
+                    val = dp[k-1, j] + cost[j+1, i] 
                     if (minimize and val < best_val) or (not minimize and val > best_val):
                         best_val = val
                         best_j = j

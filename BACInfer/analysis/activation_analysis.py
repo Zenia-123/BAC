@@ -98,10 +98,10 @@ def compute_temporal_differences(activations: List[torch.Tensor]) -> Dict[str, L
     
     return differences
 
-def load_activations(activations_path: str) -> Dict[str, List[torch.Tensor]]:
+def load_activations(activations_path: str) -> Dict[str, List[torch.Tensor]]:# 一个字符（每一层的一个block）：多个tensor
     logger.info(f"Loading activations: {activations_path}")
-    with open(activations_path, 'rb') as f:
-        return pickle.load(f)
+    with open(activations_path, 'rb') as f:#rb二进制读取文件
+        return pickle.load(f)# 反序列化，返回一个f的python对象
 
 def save_similarity_matrices(similarity_matrices: Dict[str, Dict[str, np.ndarray]], 
                            output_path: str):

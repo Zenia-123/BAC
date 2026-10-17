@@ -44,7 +44,7 @@ def get_optimal_cache_update_steps(
     output_dir.mkdir(parents=True, exist_ok=True)
     activations_path = output_dir /'original'/'activations.pkl'
     if not activations_path.exists() or force_recompute:
-        logger.info(f"Collecting activations...")
+        logger.info(f"Collecting activations...")## 无缓存模式
         task_name = output_dir.name
         output_base_dir = str(output_dir.parent)
         collect_activations(
@@ -72,7 +72,7 @@ def get_optimal_cache_update_steps(
 
         # Only compute similarity matrices for dropout modules in decoder.layers and first layer self_attn
         results = {}
-        pattern = re.compile(r'(decoder\.layers\.\d+\.dropout[1-3]|decoder\.layers\.0\.self_attn)')
+        pattern = re.compile(r'(decoder\.layers\.\d+\.dropout[1-3]|decoder\.layers\.0\.self_attn)')# 正则表达式，生成一个pattern的对象
 
         for module_name, module_activations in activations_dict.items():
             # Only process dropout modules in decoder.layers and first layer self_attn
@@ -155,7 +155,6 @@ def get_optimal_cache_update_steps(
                 logger.warning(f"Module {module_name} does not support metric {metric}")
 
     return results
-
 
 @click.command()
 @click.option('-c', '--checkpoint', required=True)

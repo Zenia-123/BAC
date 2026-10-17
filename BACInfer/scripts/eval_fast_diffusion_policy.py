@@ -42,7 +42,7 @@ def main(checkpoint, output_dir, device, cache_threshold, optimal_steps_dir,
     logger.info(f"Configuration loaded: {cfg._target_}")
 
     cls = hydra.utils.get_class(cfg._target_)
-    workspace = cls(cfg, output_dir=output_dir)
+    workspace = cls(cfg)
     workspace.load_payload(payload, exclude_keys=None, include_keys=None)
     logger.info("Workspace loaded successfully")
 
@@ -217,7 +217,7 @@ def main(checkpoint, output_dir, device, cache_threshold, optimal_steps_dir,
     
     for i in range(num_trials):
         torch.cuda.synchronize()
-        start_time = time.time()
+        start_time = time.time() ## 速度测试
         
         with torch.no_grad():
             fast_policy.predict_action(obs_dict)
@@ -266,7 +266,7 @@ def main(checkpoint, output_dir, device, cache_threshold, optimal_steps_dir,
         },
         "speedup": float(speedup_time),
         "flops": float(flops_value),
-        "config": OmegaConf.to_container(cfg, resolve=True)
+        "config": OmegaConf.to_container(cfg, resolve=True)#解析成真实值
     }
     
     with open(os.path.join(output_dir, 'benchmark_results.json'), 'w') as f:
@@ -274,36 +274,54 @@ def main(checkpoint, output_dir, device, cache_threshold, optimal_steps_dir,
     
     logger.info(f"Benchmark results saved to {output_dir}/benchmark_results.json")
     
-    env_runner_cfg = OmegaConf.to_container(cfg.task.env_runner, resolve=True)
-    if skip_video:
-        env_runner_cfg['n_train_vis'] = 0
-        env_runner_cfg['n_test_vis'] = 0
-        logger.info("Skip video rendering")
-    
-    env_runner = hydra.utils.instantiate(env_runner_cfg, output_dir=output_dir)
-    
-    logger.info("\nRunning environment evaluation with cached policy...")
-    fast_runner_log = env_runner.run(fast_policy)
-    
-    test_mean_score = fast_runner_log.get('test/mean_score', 0.0)
-    
+    test_mean_score = None
+    fast_runner_log = {}
+    try:
+        env_runner_cfg = OmegaConf.to_container(cfg.task.env_runner, resolve=True)
+        if skip_video:
+            env_runner_cfg['n_train_vis'] = 0
+            env_runner_cfg['n_test_vis'] = 0
+            logger.info("Skip video rendering")
+
+        env_runner = hydra.utils.instantiate(env_runner_cfg, output_dir=output_dir)
+
+        logger.info("\nRunning environment evaluation with cached policy...")
+        fast_runner_log = env_runner.run(fast_policy)
+
+        test_mean_score = fast_runner_log.get('test/mean_score', 0.0)
+    except Exception as e:
+        # Hydra wraps import errors (e.g. missing gym/tf_agents/pybullet) in its
+        # own InstantiationException, so catch broadly here: env evaluation is
+        # optional and must not abort the benchmark when deps are unavailable.
+        logger.warning(
+            f"Skipping environment evaluation (success-rate measurement): "
+            f"{type(e).__name__}: {e}. Benchmark results (speed/FLOPs) are unaffected."
+        )
+        # Print the full traceback: without it, bare errors like AssertionError
+        # carry no clue about where they came from.
+        import traceback
+        traceback.print_exc()
+
     eval_results = {
-        "mean_score": float(test_mean_score),
+        "mean_score": float(test_mean_score) if test_mean_score is not None else None,
         "speedup": float(speedup_time),
         "flops": float(flops_value),
         "cache_mode": cache_mode,
         "num_caches": num_caches if cache_mode in ['optimal'] else None,
         "num_bu_blocks": int(num_bu_blocks)
     }
-    
+
     with open(os.path.join(output_dir, 'eval_results.json'), 'w') as f:
         json.dump(eval_results, f, indent=2)
-    
+
     logger.info(f"Evaluation results saved to {output_dir}/eval_results.json")
-    logger.info(f"Test success rate: {test_mean_score:.4f}, Speedup: {speedup_time:.2f}x")
+    if test_mean_score is not None:
+        logger.info(f"Test success rate: {test_mean_score:.4f}, Speedup: {speedup_time:.2f}x")
+    else:
+        logger.info(f"Speedup: {speedup_time:.2f}x (env evaluation skipped)")
     if flops_value > 0:
         logger.info(f"FLOPs: {flops_value/1e9:.4f} GFLOPs")
-    
+
     json_log = {k: v._path if hasattr(v, '_path') else v for k, v in fast_runner_log.items()}
     out_path = os.path.join(output_dir, 'fast_eval_log.json')
     with open(out_path, 'w') as f:
