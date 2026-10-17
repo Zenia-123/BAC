@@ -132,7 +132,7 @@ def main(checkpoint, output_dir, device, cache_threshold, optimal_steps_dir,
     
     flops_value = 0.0
 
-    logger.info("\nComputing policy FLOPs using thop...")
+    logger.info("\nEstimating one Transformer forward with THOP (partial operator coverage)...")
     obs_dict_copy = {}
     for key, value in obs_dict.items():
         obs_dict_copy[key] = value.clone()
@@ -194,12 +194,22 @@ def main(checkpoint, output_dir, device, cache_threshold, optimal_steps_dir,
                 sample[:,:To,action_dim:] = obs_dict['obs'][:,:To]
         
         fast_policy.eval()
-        macs, params = profile(fast_policy.model, inputs=(sample, timestep, cond), verbose=False)
+        with torch.autocast(
+            device_type='cuda',
+            dtype=torch.float16,
+            enabled=(precision == 'fp16_amp'),
+        ):
+            macs, params = profile(
+                fast_policy.model, inputs=(sample, timestep, cond), verbose=False
+            )
         flops_value = macs * 2
         
-        logger.info(f"Model parameter count: {params/1e6:.2f} M")
-        logger.info(f"Model MACs: {macs/1e9:.4f} G")
-        logger.info(f"Model FLOPs: {flops_value/1e9:.4f} G")
+        actual_params = sum(p.numel() for p in fast_policy.model.parameters())
+        logger.info(f"Actual model parameter count: {actual_params/1e6:.2f} M")
+        logger.info(f"THOP-counted parameters: {params/1e6:.2f} M")
+        logger.info(f"THOP partial single-forward MACs: {macs/1e9:.4f} G")
+        logger.info(f"THOP partial single-forward FLOPs (2 * MACs): {flops_value/1e9:.4f} G")
+        logger.info("THOP coverage is incomplete for attention and depends on current cache state; not full sampling FLOPs")
 
     logger.info(f"\n=== Performance Testing (action frames/inference: {actions_per_inference}) ===")
     
@@ -280,6 +290,7 @@ def main(checkpoint, output_dir, device, cache_threshold, optimal_steps_dir,
         },
         "speedup": float(speedup_time),
         "flops": float(flops_value),
+        "flops_scope": "partial_single_transformer_forward_thop_cache_state_dependent",
         "config": OmegaConf.to_container(cfg, resolve=True)#解析成真实值
     }
     

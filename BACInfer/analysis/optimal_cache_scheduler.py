@@ -56,6 +56,10 @@ class OptimalCacheScheduler:
             return []
 
         n_steps = self.similarity_matrix.shape[0]
+        if self.similarity_matrix.shape != (n_steps, n_steps) or not np.isfinite(self.similarity_matrix).all():
+            raise ValueError('Expected a finite square similarity matrix')
+        if not 1 <= num_caches <= n_steps:
+            raise ValueError(f'num_caches must be in [1, {n_steps}]')
 
         # Pre-compute cost matrix: represents the sum of similarities obtained by using cache from timestep a to b
         cost = np.zeros((n_steps, n_steps))
@@ -66,7 +70,7 @@ class OptimalCacheScheduler:
 
 
         # Determine whether to minimize or maximize
-        minimize = self.metric in ['mse', 'l1', '12','wasserstein']
+        minimize = self.metric in ['mse', 'l1', 'l2', 'wasserstein']
 
         if minimize:
             # Minimize: initialize to infinity

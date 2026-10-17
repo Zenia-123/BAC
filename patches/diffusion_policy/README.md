@@ -1,5 +1,10 @@
 # diffusion_policy 子模块恢复（方案 B）
 
+> 历史说明：当前分支已将 `diffusion_policy/` 转为 BAC 直接跟踪的源码目录。
+> 新克隆无需初始化子模块或应用补丁；直接编辑、测试并提交源码即可。
+> 本目录保留早期 P1 的原始补丁和校验记录，只适用于迁移前的提交。
+> 当前说明见 `diffusion_policy/VENDORED.md` 和 `reports/LOWDIM_FP16_RUNBOOK.md`。
+
 主仓库保持公开子模块基准 `5ba07ac6661db573af695b419a7947ecb704690f`，修改通过本目录的完整 patch 交付，不需要第二个私有仓库。不要把仅存在本机的子模块新提交作为主仓库 gitlink 推送。
 
 ## 新目录恢复

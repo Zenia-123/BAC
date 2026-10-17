@@ -191,4 +191,7 @@ dmypy.json
 *.jsonl.bz2
 *.jsonl.zip
 *.jsonl.tar
+
+# Small reproducible FP16 summaries and schedules; raw tensors stay in results/.
+!reports/lowdim_fp16/*.json
 *.jsonl.gz

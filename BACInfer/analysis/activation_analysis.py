@@ -25,8 +25,8 @@ def wasserstein_distance_torch(x: torch.Tensor, y: torch.Tensor) -> float:
     return wasserstein_dist
 
 def compute_similarity_metrics(act_i: torch.Tensor, act_j: torch.Tensor) -> Dict[str, float]:
-    act_i = act_i.flatten()
-    act_j = act_j.flatten()
+    act_i = act_i.float().flatten()
+    act_j = act_j.float().flatten()
     
     mse = torch.mean((act_i - act_j) ** 2).item()
     cos_sim = torch.nn.functional.cosine_similarity(act_i.unsqueeze(0), act_j.unsqueeze(0)).item()
@@ -43,8 +43,8 @@ def compute_similarity_metrics(act_i: torch.Tensor, act_j: torch.Tensor) -> Dict
     }
 
 def compute_temporal_metrics(current: torch.Tensor, previous: torch.Tensor) -> Dict[str, float]:
-    current = current.flatten()
-    previous = previous.flatten()
+    current = current.float().flatten()
+    previous = previous.float().flatten()
     
     mse = torch.mean((current - previous) ** 2).item()
     cos_sim = torch.nn.functional.cosine_similarity(
@@ -358,4 +358,4 @@ def analyze_all_modules_statistics(activations_dict, num_timesteps=100):
         except Exception as e:
             logger.error(f"Error processing module {module_name}: {e}")
     
-    return all_module_stats 
+    return all_module_stats

@@ -142,7 +142,9 @@ def collect_activations(
     edit_steps=None,
     interpolation_ratio=1.0,
     reference_activations_path=None,
-    random_seed=DEFAULT_RANDOM_SEED
+    random_seed=DEFAULT_RANDOM_SEED,
+    precision='fp32',
+    policy_weights='model',
 ):
     if random_seed is not None:
         logger.info(f"Setting random seed to {random_seed}")
@@ -172,7 +174,7 @@ def collect_activations(
     if interpolation_ratio < 1.0 and reference_activations_path:
         cache_dir_name = f"{cache_dir_name}_interp_{interpolation_ratio:.2f}"
     
-    output_dir = output_base_dir / task_name / cache_dir_name
+    output_dir = output_base_dir / task_name / precision / cache_dir_name
     output_dir.mkdir(parents=True, exist_ok=True)
     
     save_path = output_dir / 'activations.pkl'
@@ -214,7 +216,7 @@ def collect_activations(
         edit_steps=edit_steps,
         interpolation_ratio=interpolation_ratio,
         reference_activations_path=reference_activations_path,
-        random_seed=random_seed
+        random_seed=random_seed, precision=precision, policy_weights=policy_weights
     )
     
     if cache_mode != 'original':
@@ -270,16 +272,16 @@ def collect_activations(
     import types
     target_model.forward = types.MethodType(patched_forward, target_model)
     
-    with torch.no_grad():
-        if cache_mode != 'original' and hasattr(policy, 'reset_cache'):
-            policy.reset_cache()
-        action_dict = policy.predict_action(obs_dict)
-    
-    collector.handle_step_completion()
-    collector.save_activations(save_path)
-    
-    collector.remove_hooks()
-    target_model.forward = original_model_forward
+    try:
+        with torch.inference_mode():
+            if cache_mode != 'original' and hasattr(policy, 'reset_cache'):
+                policy.reset_cache()
+            action_dict = policy.predict_action(obs_dict)
+        collector.handle_step_completion()
+        collector.save_activations(save_path)
+    finally:
+        collector.remove_hooks()
+        target_model.forward = original_model_forward
     
     logger.info(f"Activation collection complete, saved to: {save_path}")
     return collector.get_activations()
@@ -307,7 +309,7 @@ def get_activations_path(output_base_dir, task_name, cache_mode, **kwargs):
     if interpolation_ratio < 1.0 and kwargs.get("reference_activations_path"):
         cache_dir_name = f"{cache_dir_name}_interp_{interpolation_ratio:.2f}"
     
-    return output_base_dir / task_name / cache_dir_name / 'activations.pkl'
+    return output_base_dir / task_name / kwargs.get('precision', 'fp32') / cache_dir_name / 'activations.pkl'
 
 if __name__ == '__main__':
     import click
@@ -330,9 +332,12 @@ if __name__ == '__main__':
     @click.option('--interpolation_ratio', default=1.0, type=float)
     @click.option('--reference_activations_path', default=None)
     @click.option('--random_seed', default=DEFAULT_RANDOM_SEED, type=int)
+    @click.option('--precision', type=click.Choice(['fp32', 'fp16_amp']), default='fp32')
+    @click.option('--policy_weights', type=click.Choice(['model', 'ema']), default='model')
     def main(checkpoint, output_base_dir, task_name, device, demo_idx, force,
              cache_mode, cache_threshold, optimal_steps_dir, num_caches, metric,
-             bu, edit_steps, interpolation_ratio, reference_activations_path, random_seed):
+             bu, edit_steps, interpolation_ratio, reference_activations_path, random_seed,
+             precision, policy_weights):
       
         
         set_global_seed(random_seed)
@@ -357,9 +362,9 @@ if __name__ == '__main__':
             edit_steps=processed_edit_steps,
             interpolation_ratio=interpolation_ratio,
             reference_activations_path=reference_activations_path,
-            random_seed=random_seed
+            random_seed=random_seed, precision=precision, policy_weights=policy_weights
         )
     
 
     set_global_seed(DEFAULT_RANDOM_SEED)
-    main() 
+    main()

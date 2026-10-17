@@ -8,8 +8,6 @@ import torch
 import torch.backends.cudnn as cudnn
 root_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.path.append(root_dir)
-sys.stdout = open(sys.stdout.fileno(), mode='w', buffering=1)
-sys.stderr = open(sys.stderr.fileno(), mode='w', buffering=1)
 
 import pathlib
 import click
@@ -53,7 +51,9 @@ def run_policy(
     interpolation_ratio=1.0,
     reference_activations_path=None,
     return_obs_action=False,
-    random_seed=11
+    random_seed=11,
+    precision='fp32',
+    policy_weights='model',
 ):
     # Set random seed
     set_seed_for_policy(random_seed)
@@ -73,9 +73,16 @@ def run_policy(
 
     # Get policy model
     device = torch.device(device)
-    policy = workspace.model
-    if hasattr(cfg.training, 'use_ema') and cfg.training.use_ema:
-        policy = workspace.ema_model
+    if policy_weights not in ('model', 'ema'):
+        raise ValueError('policy_weights must be model or ema')
+    policy = workspace.model if policy_weights == 'model' else workspace.ema_model
+    if policy is None:
+        raise ValueError('Checkpoint has no requested policy weights')
+    if precision not in ('fp32', 'fp16_amp'):
+        raise ValueError('precision must be fp32 or fp16_amp')
+    if precision == 'fp16_amp' and (device.type != 'cuda' or not torch.cuda.is_available()):
+        raise ValueError('fp16_amp requires CUDA')
+    policy.inference_precision = precision
     policy.to(device)
     policy.eval()
 
@@ -115,10 +122,10 @@ def run_policy(
         # Add BU algorithm parameters
         cache_params['num_bu_blocks'] = num_bu_blocks
 
-        # Add interpolation parameters
-        cache_params['interpolation_ratio'] = interpolation_ratio
-        if reference_activations_path:
-            cache_params['reference_activations_path'] = reference_activations_path
+        if cache_mode not in ('threshold', 'optimal'):
+            raise ValueError('Current cache wrapper supports original, threshold and optimal')
+        if interpolation_ratio != 1.0 or reference_activations_path:
+            raise ValueError('Interpolation is not supported by the current cache wrapper')
 
         # Apply caching
         policy = FastDiffusionPolicy.apply_cache(policy, **cache_params)
@@ -219,10 +226,12 @@ def run_policy(
 @click.option('--interpolation_ratio', default=1.0, type=float)
 @click.option('--reference_activations_path', default=None)
 @click.option('--random_seed', default=11, type=int)
+@click.option('--precision', type=click.Choice(['fp32', 'fp16_amp']), default='fp32')
+@click.option('--policy_weights', type=click.Choice(['model', 'ema']), default='model')
 def main(checkpoint, output_dir, device, demo_idx,
          cache_mode, cache_threshold, optimal_steps_dir,
          num_caches, metric, num_bu_blocks, edit_steps,
-         interpolation_ratio, reference_activations_path, random_seed):
+         interpolation_ratio, reference_activations_path, random_seed, precision, policy_weights):
 
     # Process edit_steps parameter
     processed_edit_steps = None
@@ -236,7 +245,7 @@ def main(checkpoint, output_dir, device, demo_idx,
         num_caches, metric, num_bu_blocks,
         processed_edit_steps, interpolation_ratio, reference_activations_path,
         return_obs_action=True,
-        random_seed=random_seed
+        random_seed=random_seed, precision=precision, policy_weights=policy_weights
     )
 
     # Transfer back to CPU
@@ -253,4 +262,4 @@ def main(checkpoint, output_dir, device, demo_idx,
     return action
 
 if __name__ == '__main__':
-    main() 
+    main()

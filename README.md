@@ -1,5 +1,10 @@
 # Block-wise Adaptive Caching for Diffusion Policy
 
+本分支的 Lowdim FP16 实验入口、结果和运行说明见
+[LOWDIM_FP16_RUNBOOK](reports/LOWDIM_FP16_RUNBOOK.md)。
+`diffusion_policy/` 已作为普通源码纳入 BAC：克隆后无需子模块初始化或应用补丁。
+沿用已有 `bac` 环境，不需要重新训练或重装环境。
+
 <div align="center">
 
 ### 🚀 An Efficient Acceleration Technique for Transformer-based Diffusion Policies

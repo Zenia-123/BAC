@@ -24,6 +24,9 @@ def main():
     args = parser.parse_args()
     root = Path(__file__).resolve().parents[1]
     repo = root / 'diffusion_policy'
+    if (repo / 'VENDORED.md').is_file():
+        print('diffusion_policy is tracked directly in BAC; no patch is needed. No files changed.')
+        return
     patch_dir = root / 'patches' / 'diffusion_policy'
     patch = patch_dir / 'lowdim_fp16.patch'
     manifest = configparser.ConfigParser()

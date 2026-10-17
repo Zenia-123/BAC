@@ -38,15 +38,21 @@ def get_optimal_cache_update_steps(
     demo_idx: int = 0,
     force_recompute: bool = False,
     metrics: List[str] = None,
-    num_caches_list: List[int] = None
+    num_caches_list: List[int] = None,
+    precision: str = 'fp32',
+    policy_weights: str = 'model',
 ) -> Dict[str, Dict[str, Dict[str, List[int]]]]:
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
+    collection_dir = output_dir
+    output_dir = output_dir / precision
+    metrics = metrics or ['cosine']
+    num_caches_list = num_caches_list or [20]
     activations_path = output_dir /'original'/'activations.pkl'
     if not activations_path.exists() or force_recompute:
         logger.info(f"Collecting activations...")## 无缓存模式
-        task_name = output_dir.name
-        output_base_dir = str(output_dir.parent)
+        task_name = collection_dir.name
+        output_base_dir = str(collection_dir.parent)
         collect_activations(
             checkpoint=checkpoint,
             output_base_dir=output_base_dir,
@@ -54,7 +60,7 @@ def get_optimal_cache_update_steps(
             device=device,
             demo_idx=demo_idx,
             force_recompute=force_recompute,
-            cache_mode='original'
+            cache_mode='original', precision=precision, policy_weights=policy_weights
         )
         logger.info(f"Activations saved to {activations_path}")
     else:
@@ -126,7 +132,7 @@ def get_optimal_cache_update_steps(
                 for num_caches in num_caches_list:
                     # Build cache step file path
                     cache_filename = f"optimal_steps_{module_name}_{num_caches}_{metric}.pkl"
-                    cache_path = output_dir / 'optimal_steps'/ metric / module_name / cache_filename
+                    cache_path = output_dir / 'original' / 'optimal_steps'/ metric / module_name / cache_filename
 
                     if not cache_path.exists() or force_recompute:
                         logger.info(f"Computing optimal cache steps: module={module_name}, metric={metric}, num_caches={num_caches}")
@@ -164,8 +170,11 @@ def get_optimal_cache_update_steps(
 @click.option('--force_recompute', is_flag=True)
 @click.option('--metrics', default='cosine,l1,mse')
 @click.option('--num_caches', default='5,8,10,20')
+@click.option('--precision', type=click.Choice(['fp32', 'fp16_amp']), default='fp32')
+@click.option('--policy_weights', type=click.Choice(['model', 'ema']), default='model')
 
-def main(checkpoint, output_dir, device, demo_idx, force_recompute, metrics, num_caches):
+def main(checkpoint, output_dir, device, demo_idx, force_recompute, metrics, num_caches,
+         precision, policy_weights):
     """Compute optimal cache steps for dropout modules in decoder.layers"""
     # Parse metrics string to list
     metrics_list = metrics.split(',') if metrics else None
@@ -181,7 +190,7 @@ def main(checkpoint, output_dir, device, demo_idx, force_recompute, metrics, num
         demo_idx=demo_idx,
         force_recompute=force_recompute,
         metrics=metrics_list,
-        num_caches_list=num_caches_list
+        num_caches_list=num_caches_list, precision=precision, policy_weights=policy_weights
     )
 
     # Output analysis results summary
@@ -203,8 +212,8 @@ def main(checkpoint, output_dir, device, demo_idx, force_recompute, metrics, num
 
                 # Display viewable file paths
                 cache_filename = f"optimal_steps_{module_name}_{num_caches}_{metric}"
-                txt_path = os.path.join(output_dir, 'optimal_steps', metric, module_name, f"{cache_filename}.txt")
-                json_path = os.path.join(output_dir, 'optimal_steps', metric, module_name, f"{cache_filename}.json")
+                txt_path = os.path.join(output_dir, precision, 'original', 'optimal_steps', metric, module_name, f"{cache_filename}.txt")
+                json_path = os.path.join(output_dir, precision, 'original', 'optimal_steps', metric, module_name, f"{cache_filename}.json")
 
                 if os.path.exists(txt_path):
                     logger.info(f"      View TXT file: {txt_path}")

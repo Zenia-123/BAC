@@ -20,7 +20,8 @@ class FastDiffusionPolicy:
                    num_caches: int = 30,
                    metric: str = 'cosine',
                    cache_mode: str = None,
-                   num_bu_blocks: int = 0):
+                   num_bu_blocks: int = 0,
+                   bu_blocks: List[str] = None):
         if cache_mode is None:
             if optimal_steps_dir is not None:
                 cache_mode = 'optimal'
@@ -29,6 +30,13 @@ class FastDiffusionPolicy:
         if cache_mode == 'original':
             logger.info("Using original mode, no caching applied")
             return policy
+
+        if cache_mode not in ('threshold', 'optimal'):
+            raise ValueError(f'Unsupported cache mode: {cache_mode}')
+        if cache_mode == 'threshold' and cache_threshold < 1:
+            raise ValueError('cache_threshold must be positive')
+        if cache_mode == 'optimal' and optimal_steps_dir is None:
+            raise ValueError('optimal mode requires optimal_steps_dir')
 
         assert hasattr(policy, 'model')     #判断对象是否存在model属性
         model = policy.model
@@ -46,6 +54,7 @@ class FastDiffusionPolicy:
             'block_cache': {},#保存个模块的缓存输出，{层名：特征}
             'block_steps': {},#各模块应该在哪些步骤更新
             'num_bu_blocks': num_bu_blocks,    #可复用块的数量
+            'bu_blocks': bu_blocks,
         }
         policy._cache = cache # 动态给policy对象添加了一个_cache属性
 
@@ -183,58 +192,39 @@ class FastDiffusionPolicy:
                 block_steps[ff_block_key] = steps
                 logger.info(f"Loaded steps for feedforward block {ff_block_key}: {steps}")
 
+        expected = {
+            f'{name}_{suffix}' for name, _ in layers
+            for suffix in ('sa_block', 'mha_block', 'ff_block')
+        }
+        missing = expected - set(block_steps)
+        if missing:
+            raise ValueError(f'Missing ACS schedules for blocks: {sorted(missing)}')
+        for name, steps in block_steps.items():
+            if not steps or 0 not in steps or any(
+                    int(step) != step or not 0 <= int(step) < cache['num_steps'] for step in steps):
+                raise ValueError(f'Invalid execution-index schedule for {name}: {steps}')
+
         if cache.get('num_bu_blocks', 0) > 0:
             logger.info("Applying BU (Bubbling Union) algorithm for step propagation")
 
             bu_blocks = cache.get('bu_blocks', None)
 
             if bu_blocks is None:
-                try:
-                    from BACInfer.analysis.bu_block_selection import (
-                        analyze_block_errors,
-                    )
-
-                    if optimal_steps_dir:
-                        steps_path = Path(optimal_steps_dir)
-                        if "optimal_steps" in str(steps_path):
-                            base_path = steps_path.parent.parent
-                            output_base_dir = str(base_path.parent)
-                            task_name = base_path.name.split('/')[0]
-                            logger.info(f"Derived base directory from optimal_steps_dir: output_base_dir={output_base_dir}, task={task_name}")
-                        else:
-                            logger.info("Cannot derive base directory from optimal_steps_dir")
-                    else:
-                        logger.info("optimal_steps_dir not provided")
-
-                    num_blocks = cache.get('num_bu_blocks', 3)
-
-                    bu_analysis_dir = f"{output_base_dir}/{task_name}/bu_block_selection"
-                    analysis_output_dir = Path(bu_analysis_dir)
-                    logger.info(f"BU analysis output directory: {analysis_output_dir}")
-
-                    selected_path = analysis_output_dir / f'top_{num_blocks}_error_blocks.pkl'
-
-                    if selected_path.exists():
-                        with open(selected_path, 'rb') as f:
-                            selected_blocks_dict = pickle.load(f)
-                            bu_blocks = list(selected_blocks_dict.keys())
-                            logger.info(f"Loaded {len(bu_blocks)} high-error blocks for BU: {bu_blocks}")
-                    else:
-                        # If file doesn't exist, compute from activations
-                        activations_path = Path(f"{output_base_dir}/{task_name}/activations.pkl")
-                        if activations_path.exists():
-                            logger.info("Computing high-error blocks for BU algorithm...")
-                            analysis_output_dir.mkdir(parents=True, exist_ok=True)
-                            selected_blocks = analyze_block_errors(str(activations_path), str(analysis_output_dir), num_blocks)
-                            bu_blocks = [block for block, _ in selected_blocks]
-                            logger.info(f"Computed {len(bu_blocks)} high-error blocks for BU: {bu_blocks}")
-                        else:
-                            logger.warning(f"Activation file not found: {activations_path}, cannot apply BU")
-                            bu_blocks = []
-                except Exception as e:
-                    logger.warning(f"Error loading/computing high-error blocks: {e}")
-                    logger.warning(f"Cannot apply BU algorithm")
-                    bu_blocks = []
+                from BACInfer.analysis.bu_block_selection import analyze_block_errors
+                activation_dir = next(
+                    (p for p in (steps_dir, *steps_dir.parents) if (p / 'activations.pkl').is_file()),
+                    None,
+                )
+                if activation_dir is None:
+                    raise ValueError('BUA requires explicit bu_blocks or calibration activations.pkl')
+                selected = analyze_block_errors(
+                    str(activation_dir / 'activations.pkl'),
+                    str(activation_dir / 'bu_block_selection'), cache['num_bu_blocks'],
+                )
+                bu_blocks = [name for name, _ in selected]
+            if not bu_blocks or not set(bu_blocks) <= set(block_steps):
+                raise ValueError(f'Invalid BUA block selection: {bu_blocks}')
+            cache['bu_blocks'] = list(bu_blocks)
 
             if len(bu_blocks) > 1:
                 def get_layer_idx(block_key):
@@ -300,7 +290,7 @@ class FastDiffusionPolicy:
             logger.info("\n===== BU Algorithm Summary =====" )
             logger.info(f"Total BU blocks processed: {len(bu_blocks)}")
 
-            for block_key in sorted(bu_blocks, key=lambda x: (get_layer_idx(x), get_block_type_priority(x))):
+            for block_key in sorted(bu_blocks):
                 if block_key in block_steps:
                     steps_count = len(block_steps[block_key])
                     logger.info(f"  Block {block_key}: {steps_count} steps")
@@ -338,7 +328,7 @@ class FastDiffusionPolicy:
                         steps_lookup[block_key] = set()
                     else:
                         steps_lookup[block_key] = set(steps)
-                        steps_lookup[block_key].add(99)
+                        steps_lookup[block_key].add(cache['num_steps'] - 1)
                        
                 cache['steps_lookup'] = steps_lookup
 
