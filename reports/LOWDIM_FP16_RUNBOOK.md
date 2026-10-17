@@ -147,3 +147,12 @@ git push origin feature/lowdim_fp16
 ```
 
 这只是以后继续开发的示例；只加入本次实际修改的文件。数据、checkpoint、原始激活和大型日志不上传。原始第三方 LICENSE 与源码资产完整保留，旧 patch 仅作历史记录。
+
+在新电脑或一个新的空目录恢复源码：
+
+```bash
+git clone --branch feature/lowdim_fp16 git@github.com:Zenia-123/BAC.git
+cd BAC
+```
+
+这里已经包含修改后的 `diffusion_policy/`；无需额外应用 patch。当前电脑已经同步完成，无需为了看到修改再克隆或切换分支。

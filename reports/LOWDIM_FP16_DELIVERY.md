@@ -33,3 +33,11 @@
 速度、误差和 BUA 的效果应逐项读取 [P5_lowdim_fp16_results.md](P5_lowdim_fp16_results.md)，不能把 FP16 与缓存的收益混为一谈。BUA 并不保证每组都更快或误差更小。预算 5 的模式未做闭环评估；预算 20 的三个环境 seeds 也不足以得出论文规模的泛化结论。校准只使用一个初始观测窗口，后续扩大统计量时应保留本轮结果并使用新的输出目录。
 
 具体修改位置、作用、调用链、完整运行命令和以后如何 Git 提交，见 [LOWDIM_FP16_RUNBOOK.md](LOWDIM_FP16_RUNBOOK.md)。
+
+## 远程保存与恢复验证
+
+已推送至 `origin/feature/lowdim_fp16`：`a939393`（导入完整源码）和 `74b4761`（实验、修复、报告与已有学习笔记）。
+
+对 GitHub 进行独立的浅克隆和稀疏源码检出，未依赖本地 Git 对象复制：远程 HEAD 的全部文件路径、类型和 blob 内容哈希与本地主仓库完全一致，且不存在 160000 gitlink。实际从远程取回的 178 个原始 Python 文件 SHA-256 均与迁移前一致；BACInfer、Policy 和 Transformer 的导入路径均指向新检出目录；该目录内再次通过全部 6 项测试。验证日志：本机 `.git/lowdim-full-cy8w51br/remote-verification.log`。
+
+远程恢复不需要 patch、不需要另一个私有仓库，也不需要 `git submodule update`。模型 checkpoint 与原始激活未上传，复跑实验时仍需本机 checkpoint 和现有 `bac` 环境。本次恢复验证没有重跑已完成的全部 GPU / rollout 实验。
