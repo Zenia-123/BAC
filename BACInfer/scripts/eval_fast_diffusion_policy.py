@@ -17,6 +17,7 @@ from thop import profile
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from BACInfer.core.diffusion_cache_wrapper import FastDiffusionPolicy
 from diffusion_policy.common.pytorch_util import dict_apply
+from diffusion_policy.policy.diffusion_transformer_lowdim_policy import DiffusionTransformerLowdimPolicy
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 logger = logging.getLogger("eval_script")
@@ -25,6 +26,9 @@ logger = logging.getLogger("eval_script")
 @click.option('-c', '--checkpoint', required=True)
 @click.option('-o', '--output_dir', required=True)
 @click.option('-d', '--device', default='cuda:0')
+@click.option('--precision', type=click.Choice(['fp32', 'fp16_amp']),
+              default='fp32', show_default=True,
+              help='Lowdim Transformer inference precision; fp16_amp requires CUDA.')
 @click.option('--cache_threshold', default=5, type=int)
 @click.option('--optimal_steps_dir', default=None)
 @click.option('--num_caches', default=30, type=int)
@@ -34,7 +38,10 @@ logger = logging.getLogger("eval_script")
 @click.option('--skip_video', is_flag=True)
 
 def main(checkpoint, output_dir, device, cache_threshold, optimal_steps_dir,
-         num_caches, metric, cache_mode, num_bu_blocks, skip_video):
+         num_caches, metric, cache_mode, num_bu_blocks, skip_video, precision):
+    if precision == 'fp16_amp' and (
+            torch.device(device).type != 'cuda' or not torch.cuda.is_available()):
+        raise click.ClickException('fp16_amp requires an available CUDA device')
     pathlib.Path(output_dir).mkdir(parents=True, exist_ok=True)
 
     payload = torch.load(open(checkpoint, 'rb'), pickle_module=dill)
@@ -47,6 +54,8 @@ def main(checkpoint, output_dir, device, cache_threshold, optimal_steps_dir,
     logger.info("Workspace loaded successfully")
 
     original_policy = workspace.model
+    if precision == 'fp16_amp' and not isinstance(original_policy, DiffusionTransformerLowdimPolicy):
+        raise click.ClickException('fp16_amp supports DiffusionTransformerLowdimPolicy only')
     original_policy.to(device)
     original_policy.eval()
 
@@ -60,6 +69,10 @@ def main(checkpoint, output_dir, device, cache_threshold, optimal_steps_dir,
 
     logger.info("Creating policy copy for cache acceleration...")
     fast_policy = deepcopy(original_policy)
+    if isinstance(original_policy, DiffusionTransformerLowdimPolicy):
+        original_policy.inference_precision = precision
+        fast_policy.inference_precision = precision
+    logger.info(f"Inference precision for original and cached policies: {precision}")
     
     if cache_mode == 'optimal':
         logger.info(f"Applying optimal steps-based cache acceleration, dir={optimal_steps_dir}, metric={metric}")
@@ -237,6 +250,7 @@ def main(checkpoint, output_dir, device, cache_threshold, optimal_steps_dir,
     
     cache_config = {
         "device": str(device),
+        "precision": precision,
         "mode": cache_mode,
         "actions_per_inference": int(actions_per_inference),
         "num_bu_blocks": int(num_bu_blocks),
@@ -303,6 +317,7 @@ def main(checkpoint, output_dir, device, cache_threshold, optimal_steps_dir,
         traceback.print_exc()
 
     eval_results = {
+        "precision": precision,
         "mean_score": float(test_mean_score) if test_mean_score is not None else None,
         "speedup": float(speedup_time),
         "flops": float(flops_value),

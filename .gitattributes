@@ -1,0 +1,2 @@
+# Preserve exact source whitespace inside the reproducible submodule patch.
+patches/diffusion_policy/*.patch -whitespace

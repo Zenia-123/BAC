@@ -1,0 +1,481 @@
+diff --git a/diffusion_policy/env_runner/blockpush_lowdim_runner.py b/diffusion_policy/env_runner/blockpush_lowdim_runner.py
+index 5193dafbb12b92c7e381a9b4ecba966dbff5bfd4..27d7fd5fce0ac8676d139b999cad89f7513d55b6 100644
+--- a/diffusion_policy/env_runner/blockpush_lowdim_runner.py
++++ b/diffusion_policy/env_runner/blockpush_lowdim_runner.py
+@@ -129,8 +129,9 @@ class BlockPushLowdimRunner(BaseLowdimRunner):
+             env_prefixs.append('test/')
+             env_init_fn_dills.append(dill.dumps(init_fn))
+ 
+-        env = AsyncVectorEnv(env_fns)
+-        # env = SyncVectorEnv(env_fns)
++        # shared_memory=False: block_pushing observations are tiny low-dim
++        # vectors, and gym>=0.23 rejects custom observation spaces in shared memory.
++        env = AsyncVectorEnv(env_fns, shared_memory=False)
+ 
+         self.env = env
+         self.env_fns = env_fns
+diff --git a/diffusion_policy/gym_util/async_vector_env.py b/diffusion_policy/gym_util/async_vector_env.py
+index dfb0f620ac3d39861e0dfc1a3a58fb22d443f244..35f535a5824f342335ae472148df5a3b9644b220 100644
+--- a/diffusion_policy/gym_util/async_vector_env.py
++++ b/diffusion_policy/gym_util/async_vector_env.py
+@@ -186,6 +186,13 @@ class AsyncVectorEnv(VectorEnv):
+         _, successes = zip(*[pipe.recv() for pipe in self.parent_pipes])
+         self._raise_if_errors(successes)
+ 
++    def reset(self, **kwargs):
++        # gym>=0.23's VectorEnv.reset passes seed/return_info/options kwargs
++        # that this 0.21-style async reset API does not accept. Seeding is
++        # handled by the runners via env.seed() in their init functions.
++        self.reset_async()
++        return self.reset_wait()
++
+     def reset_async(self):
+         self._assert_is_running()
+         if self._state != AsyncState.DEFAULT:
+@@ -230,8 +237,9 @@ class AsyncVectorEnv(VectorEnv):
+         self._state = AsyncState.DEFAULT
+ 
+         if not self.shared_memory:
++            # gym>=0.22 signature: concatenate(space, items, out)
+             self.observations = concatenate(
+-                results, self.observations, self.single_observation_space
++                self.single_observation_space, results, self.observations
+             )
+ 
+         return deepcopy(self.observations) if self.copy else self.observations
+@@ -294,7 +302,7 @@ class AsyncVectorEnv(VectorEnv):
+ 
+         if not self.shared_memory:
+             self.observations = concatenate(
+-                observations_list, self.observations, self.single_observation_space
++                self.single_observation_space, observations_list, self.observations
+             )
+ 
+         return (
+diff --git a/diffusion_policy/gym_util/sync_vector_env.py b/diffusion_policy/gym_util/sync_vector_env.py
+index c85a68223ec1a1f7e3cbb406d3472795374704f8..1279e6057e5f01392cdda5c9f552978b5bca11e8 100644
+--- a/diffusion_policy/gym_util/sync_vector_env.py
++++ b/diffusion_policy/gym_util/sync_vector_env.py
+@@ -60,6 +60,12 @@ class SyncVectorEnv(VectorEnv):
+         for env, seed in zip(self.envs, seeds):
+             env.seed(seed)
+ 
++    def reset(self, **kwargs):
++        # gym>=0.23's VectorEnv.reset passes seed/return_info/options kwargs
++        # that this 0.21-style reset_wait does not accept. Seeding is handled
++        # by the runners via env.seed().
++        return self.reset_wait()
++
+     def reset_wait(self):
+         self._dones[:] = False
+         observations = []
+@@ -67,7 +73,7 @@ class SyncVectorEnv(VectorEnv):
+             observation = env.reset()
+             observations.append(observation)
+         self.observations = concatenate(
+-            observations, self.observations, self.single_observation_space
++            self.single_observation_space, observations, self.observations
+         )
+ 
+         return deepcopy(self.observations) if self.copy else self.observations
+@@ -84,7 +90,7 @@ class SyncVectorEnv(VectorEnv):
+             observations.append(observation)
+             infos.append(info)
+         self.observations = concatenate(
+-            observations, self.observations, self.single_observation_space
++            self.single_observation_space, observations, self.observations
+         )
+ 
+         return (
+diff --git a/diffusion_policy/model/diffusion/transformer_for_diffusion.py b/diffusion_policy/model/diffusion/transformer_for_diffusion.py
+index 2c533c3d3c09c2e790f22060444e76e7a0fb002d..a1ae6ebb630547ab31f6b4edb1eb403e0d9762a1 100644
+--- a/diffusion_policy/model/diffusion/transformer_for_diffusion.py
++++ b/diffusion_policy/model/diffusion/transformer_for_diffusion.py
+@@ -12,29 +12,29 @@ class TransformerForDiffusion(ModuleAttrMixin):
+             input_dim: int,
+             output_dim: int,
+             horizon: int,
+-            n_obs_steps: int = None,
++            n_obs_steps: int = None, #观测步数。作为条件时用多少步历史观测，默认 None 时取 horizon。
+             cond_dim: int = 0,
+             n_layer: int = 12,
+             n_head: int = 12,
+             n_emb: int = 768,
+-            p_drop_emb: float = 0.1,
+-            p_drop_attn: float = 0.1,
+-            causal_attn: bool=False,
++            p_drop_emb: float = 0.1,#输入嵌入后的 Dropout 概率
++            p_drop_attn: float = 0.1,#Transformer 层内部的 注意力/FFN Dropout 概率。
++            causal_attn: bool=False,#因果注意力
+             time_as_cond: bool=True,
+-            obs_as_cond: bool=False,
+-            n_cond_layers: int = 0
++            obs_as_cond: bool=False, #观测是否作为条件"
++            n_cond_layers: int = 0 #条件编码器层数。0→用 MLP；>0→用 n_cond_layers 层 TransformerEncoder。
+         ) -> None:
+         super().__init__()
+ 
+         # compute number of tokens for main trunk and condition encoder
+         if n_obs_steps is None:
+-            n_obs_steps = horizon
++            n_obs_steps = horizon  
+         
+-        T = horizon
+-        T_cond = 1
+-        if not time_as_cond:
++        T = horizon  ## 主序列长度（动作 token 数）
++        T_cond = 1  # 条件序列长度，默认只有时间步 1 个
++        if not time_as_cond:   
+             T += 1
+-            T_cond -= 1
++            T_cond -= 1  
+         obs_as_cond = cond_dim > 0
+         if obs_as_cond:
+             assert time_as_cond
+@@ -50,14 +50,14 @@ class TransformerForDiffusion(ModuleAttrMixin):
+         self.cond_obs_emb = None
+         
+         if obs_as_cond:
+-            self.cond_obs_emb = nn.Linear(cond_dim, n_emb)
++            self.cond_obs_emb = nn.Linear(cond_dim, n_emb)#仅当 obs 做条件时创建，把 cond 特征映射到 n_emb。
+ 
+         self.cond_pos_emb = None
+         self.encoder = None
+         self.decoder = None
+         encoder_only = False
+-        if T_cond > 0:
+-            self.cond_pos_emb = nn.Parameter(torch.zeros(1, T_cond, n_emb))
++        if T_cond > 0: #A：T_cond > 0（encoder-decoder）
++            self.cond_pos_emb = nn.Parameter(torch.zeros(1, T_cond, n_emb))  #用 nn.Parameter 注册 → 会出现在 parameters() 里，被优化器更新。
+             if n_cond_layers > 0:
+                 encoder_layer = nn.TransformerEncoderLayer(
+                     d_model=n_emb,
+@@ -65,14 +65,14 @@ class TransformerForDiffusion(ModuleAttrMixin):
+                     dim_feedforward=4*n_emb,
+                     dropout=p_drop_attn,
+                     activation='gelu',
+-                    batch_first=True,
+-                    norm_first=True
++                    batch_first=True,#batch_first=True：输入形状是 (B, L, d) 而不是 (L, B, d)
++                    norm_first=True #norm_first=True：Pre-LN，对训练稳定性很关键
+                 )
+                 self.encoder = nn.TransformerEncoder(
+                     encoder_layer=encoder_layer,
+                     num_layers=n_cond_layers
+                 )
+-            else:
++            else:#两层 MLP（Linear → Mish → Linear）作为轻量条件编码器。
+                 self.encoder = nn.Sequential(
+                     nn.Linear(n_emb, 4 * n_emb),
+                     nn.Mish(),
+@@ -86,14 +86,15 @@ class TransformerForDiffusion(ModuleAttrMixin):
+                 dropout=p_drop_attn,
+                 activation='gelu',
+                 batch_first=True,
+-                norm_first=True # important for stability
++                norm_first=True 
+             )
+             self.decoder = nn.TransformerDecoder(
+                 decoder_layer=decoder_layer,
+                 num_layers=n_layer
+             )
+         else:
+-            # encoder only BERT
++            # T_cond == 0，encoder only BERT时间 token 拼到输入里，不再有独立条件序列。
++
+             encoder_only = True
+ 
+             encoder_layer = nn.TransformerEncoderLayer(
+@@ -115,17 +116,17 @@ class TransformerForDiffusion(ModuleAttrMixin):
+             # causal mask to ensure that attention is only applied to the left in the input sequence
+             # torch.nn.Transformer uses additive mask as opposed to multiplicative mask in minGPT
+             # therefore, the upper triangle should be -inf and others (including diag) should be 0.
+-            sz = T
+-            mask = (torch.triu(torch.ones(sz, sz)) == 1).transpose(0, 1)
+-            mask = mask.float().masked_fill(mask == 0, float('-inf')).masked_fill(mask == 1, float(0.0))
+-            self.register_buffer("mask", mask)
+-            
++            sz = T  #主序列长度
++            mask = (torch.triu(torch.ones(sz, sz)) == 1).transpose(0, 1)#torch.triu(...)：取上三角（含对角线），下三角为 0。
++            mask = mask.float().masked_fill(mask == 0, float('-inf')).masked_fill(mask == 1, float(0.0))  #i ≥ j 时可见
++            self.register_buffer("mask", mask)  
++          #memory 第 0 位是时间 token（s=0），后面是 obs（s=1..n_obs_steps）。  t 是 decoder 位置（0..T-1），s 是 memory 位置（0..T_cond-1）。
+             if time_as_cond and obs_as_cond:
+                 S = T_cond
+                 t, s = torch.meshgrid(
+                     torch.arange(T),
+                     torch.arange(S),
+-                    indexing='ij'
++                    indexing='ij'  #torch.meshgrid(..., indexing='ij')：生成 i×j 的坐标网格，避免 numpy 风格 xy 歧义。
+                 )
+                 mask = t >= (s-1) # add one dimension since time is the first token in cond
+                 mask = mask.float().masked_fill(mask == 0, float('-inf')).masked_fill(mask == 1, float(0.0))
+@@ -149,12 +150,12 @@ class TransformerForDiffusion(ModuleAttrMixin):
+         self.encoder_only = encoder_only
+ 
+         # init
+-        self.apply(self._init_weights)
++        self.apply(self._init_weights)#apply(fn)：递归对每个子模块调用 fn。
+         logger.info(
+-            "number of parameters: %e", sum(p.numel() for p in self.parameters())
++            "number of parameters: %e", sum(p.numel() for p in self.parameters()) #p.numel()：参数元素个数。
+         )
+ 
+-    def _init_weights(self, module):
++    def _init_weights(self, module):#容器/无参模块，无需初始化
+         ignore_types = (nn.Dropout, 
+             SinusoidalPosEmb, 
+             nn.TransformerEncoderLayer, 
+@@ -168,11 +169,11 @@ class TransformerForDiffusion(ModuleAttrMixin):
+             torch.nn.init.normal_(module.weight, mean=0.0, std=0.02)
+             if isinstance(module, nn.Linear) and module.bias is not None:
+                 torch.nn.init.zeros_(module.bias)
+-        elif isinstance(module, nn.MultiheadAttention):
++        elif isinstance(module, nn.MultiheadAttention):  
+             weight_names = [
+                 'in_proj_weight', 'q_proj_weight', 'k_proj_weight', 'v_proj_weight']
+             for name in weight_names:
+-                weight = getattr(module, name)
++                weight = getattr(module, name)  
+                 if weight is not None:
+                     torch.nn.init.normal_(weight, mean=0.0, std=0.02)
+             
+@@ -205,10 +206,10 @@ class TransformerForDiffusion(ModuleAttrMixin):
+         # separate out all parameters to those that will and won't experience regularizing weight decay
+         decay = set()
+         no_decay = set()
+-        whitelist_weight_modules = (torch.nn.Linear, torch.nn.MultiheadAttention)
+-        blacklist_weight_modules = (torch.nn.LayerNorm, torch.nn.Embedding)
+-        for mn, m in self.named_modules():
+-            for pn, p in m.named_parameters():
++        whitelist_weight_modules = (torch.nn.Linear, torch.nn.MultiheadAttention)# decay。
++        blacklist_weight_modules = (torch.nn.LayerNorm, torch.nn.Embedding)#  no_decay。
++        for mn, m in self.named_modules():#named_modules() 产出 (module_name, module)。
++            for pn, p in m.named_parameters():  #(param_name, param)。   #fpn：完整参数名，如 decoder.layers.0.self_attn.in_proj_weight。
+                 fpn = "%s.%s" % (mn, pn) if mn else pn  # full param name
+ 
+                 if pn.endswith("bias"):
+@@ -268,14 +269,14 @@ class TransformerForDiffusion(ModuleAttrMixin):
+         return optimizer
+ 
+     def forward(self, 
+-        sample: torch.Tensor, 
++        sample: torch.Tensor, #输入:  sample (B, 8, 16)   ← 加噪的 8 步动作，每步 16 维
+         timestep: Union[torch.Tensor, float, int], 
+-        cond: Optional[torch.Tensor]=None, **kwargs):
++        cond: Optional[torch.Tensor]=None, **kwargs):    #cond     = (B, 4, 10)     # 4 步观测
+         """
+         x: (B,T,input_dim)
+         timestep: (B,) or int, diffusion step
+-        cond: (B,T',cond_dim)
+-        output: (B,T,input_dim)
++        cond: (B,T',cond_dim)     
++        output: (B,T,input_dim)  
+         """
+         # 1. time
+         timesteps = timestep
+@@ -285,27 +286,27 @@ class TransformerForDiffusion(ModuleAttrMixin):
+         elif torch.is_tensor(timesteps) and len(timesteps.shape) == 0:
+             timesteps = timesteps[None].to(sample.device)
+         # broadcast to batch dimension in a way that's compatible with ONNX/Core ML
+-        timesteps = timesteps.expand(sample.shape[0])
+-        time_emb = self.time_emb(timesteps).unsqueeze(1)
++        timesteps = timesteps.expand(sample.shape[0])  #expand(B)：广播，不复制内存。  
++        time_emb = self.time_emb(timesteps).unsqueeze(1) #time_emb：(B, n_emb) → unsqueeze(1) → (B, 1, n_emb)。
+         # (B,1,n_emb)
+ 
+         # process input
+         input_emb = self.input_emb(sample)
+-
++#分支 A：encoder_only（BERT）
+         if self.encoder_only:
+             # BERT
+-            token_embeddings = torch.cat([time_emb, input_emb], dim=1)
+-            t = token_embeddings.shape[1]
++            token_embeddings = torch.cat([time_emb, input_emb], dim=1)   ## (B, T+1, n_emb)，时间 token 放在最前。
++            t = token_embeddings.shape[1]  
+             position_embeddings = self.pos_emb[
+                 :, :t, :
+-            ]  # each position maps to a (learnable) vector
+-            x = self.drop(token_embeddings + position_embeddings)
++            ]  # each position maps to a (learnable) vector    pos_emb 长度 T（因为 T 在 time_as_cond=False 时已经 +1）
++            x = self.drop(token_embeddings + position_embeddings)  
+             # (B,T+1,n_emb)
+             x = self.encoder(src=x, mask=self.mask)
+             # (B,T+1,n_emb)
+-            x = x[:,1:,:]
++            x = x[:,1:,:] #编码后丢掉第 0 个时间 token，只保留动作。
+             # (B,T,n_emb)
+-        else:
++        else:#encoder-decoder
+             # encoder
+             cond_embeddings = time_emb
+             if self.obs_as_cond:
+@@ -330,17 +331,17 @@ class TransformerForDiffusion(ModuleAttrMixin):
+             x = self.drop(token_embeddings + position_embeddings)
+             # (B,T,n_emb)
+             x = self.decoder(
+-                tgt=x,
+-                memory=memory,
+-                tgt_mask=self.mask,
+-                memory_mask=self.memory_mask
++                tgt=x,  #tgt：要预测的序列
++                memory=memory,  #条件编码结果。
++                tgt_mask=self.mask,  #tgt_mask：自身因果 mask（可选）。
++                memory_mask=self.memory_mask  # decoder 对 memory 的可见性 mask（可选）。
+             )
+-            # (B,T,n_emb)
++            # (B,T,n_emb)    
+         
+         # head
+-        x = self.ln_f(x)
++        x = self.ln_f(x)   
+         x = self.head(x)
+-        # (B,T,n_out)
++        # (B,T,n_out)                (B,T,n_emb) → (B,T,output_dim)。
+         return x
+ 
+ 
+@@ -368,7 +369,7 @@ def test():
+         input_dim=16,
+         output_dim=16,
+         horizon=8,
+-        n_obs_steps=4,
++        n_obs_steps=4,#n_obs_steps（To）是输入观测步数
+         cond_dim=10,
+         causal_attn=True,
+         # time_as_cond=False,
+@@ -378,7 +379,7 @@ def test():
+     
+     timestep = torch.tensor(0)
+     sample = torch.zeros((4,8,16))
+-    cond = torch.zeros((4,4,10))
++    cond = torch.zeros((4,4,10))  
+     out = transformer(sample, timestep, cond)
+ 
+     # GPT with time embedding and obs cond and encoder
+diff --git a/diffusion_policy/policy/diffusion_transformer_lowdim_policy.py b/diffusion_policy/policy/diffusion_transformer_lowdim_policy.py
+index 7d0eff8a322e6921decea8ef90aa2bc504a5c10e..147ab97d2f45c563193dfb708c08b5333404dad9 100644
+--- a/diffusion_policy/policy/diffusion_transformer_lowdim_policy.py
++++ b/diffusion_policy/policy/diffusion_transformer_lowdim_policy.py
+@@ -13,18 +13,22 @@ from diffusion_policy.model.diffusion.mask_generator import LowdimMaskGenerator
+ class DiffusionTransformerLowdimPolicy(BaseLowdimPolicy):
+     def __init__(self, 
+             model: TransformerForDiffusion,
+-            noise_scheduler: DDPMScheduler,
++            noise_scheduler: DDPMScheduler,#DDPM 调度器，控制加噪/去噪过程。
+             horizon, 
+-            obs_dim, 
+-            action_dim, 
++            obs_dim, #观测向量维度 Do。
++            action_dim, #动作向量维度 Da。
+             n_action_steps, 
+             n_obs_steps,
+             num_inference_steps=None,
+             obs_as_cond=False,
+             pred_action_steps_only=False,
++            inference_precision='fp32',
+             # parameters passed to step
+             **kwargs):
+         super().__init__()
++        if inference_precision not in ('fp32', 'fp16_amp'):
++            raise ValueError(f'Unsupported inference precision: {inference_precision}')
++        self.inference_precision = inference_precision
+         if pred_action_steps_only:
+             assert obs_as_cond
+ 
+@@ -48,11 +52,11 @@ class DiffusionTransformerLowdimPolicy(BaseLowdimPolicy):
+         self.kwargs = kwargs
+ 
+         if num_inference_steps is None:
+-            num_inference_steps = noise_scheduler.config.num_train_timesteps
++            num_inference_steps = noise_scheduler.config.num_train_timesteps  #默认推理步数 = 训练步数（如 1000）。
+         self.num_inference_steps = num_inference_steps
+     
+     # ========= inference  ============
+-    def conditional_sample(self, 
++    def conditional_sample(self,    #DDPM 反向采样
+             condition_data, condition_mask,
+             cond=None, generator=None,
+             # keyword arguments to scheduler.step
+@@ -60,6 +64,15 @@ class DiffusionTransformerLowdimPolicy(BaseLowdimPolicy):
+             ):
+         model = self.model
+         scheduler = self.noise_scheduler
++        precision = self.inference_precision
++        if precision not in ('fp32', 'fp16_amp'):
++            raise ValueError(f'Unsupported inference precision: {precision}')
++        use_fp16 = (precision == 'fp16_amp')
++        if use_fp16:
++            if condition_data.device.type != 'cuda':
++                raise RuntimeError('fp16_amp requires CUDA condition_data')
++            if condition_data.dtype != torch.float32:
++                raise ValueError('fp16_amp requires FP32 condition_data for the scheduler')
+ 
+         trajectory = torch.randn(
+             size=condition_data.shape, 
+@@ -74,8 +87,17 @@ class DiffusionTransformerLowdimPolicy(BaseLowdimPolicy):
+             # 1. apply conditioning
+             trajectory[condition_mask] = condition_data[condition_mask]
+ 
+-            # 2. predict model output
+-            model_output = model(trajectory, t, cond)
++            with torch.autocast(
++                device_type="cuda",
++                dtype=torch.float16,
++                enabled=use_fp16
++            ):
++                # 2. predict model output
++                model_output = model(trajectory, t, cond)
++
++            # 模型输出转回FP32  ，只transformer前向计算启用FP16 autocast
++            if use_fp16:
++                model_output = model_output.float()
+ 
+             # 3. compute previous image: x_t -> x_t-1
+             trajectory = scheduler.step(
+@@ -211,7 +233,7 @@ class DiffusionTransformerLowdimPolicy(BaseLowdimPolicy):
+             trajectory, noise, timesteps)
+         
+         # compute loss mask
+-        loss_mask = ~condition_mask
++        loss_mask = ~condition_mask  #loss_mask：只在非条件位置算 loss。
+ 
+         # apply conditioning
+         noisy_trajectory[condition_mask] = trajectory[condition_mask]
+diff --git a/diffusion_policy/workspace/train_diffusion_transformer_lowdim_workspace.py b/diffusion_policy/workspace/train_diffusion_transformer_lowdim_workspace.py
+index cbfa54b5dbef1f11be541f8108d510a0698b0c58..5ad9d62f22eb4aba6c4a3733022cc8a5353c6f77 100644
+--- a/diffusion_policy/workspace/train_diffusion_transformer_lowdim_workspace.py
++++ b/diffusion_policy/workspace/train_diffusion_transformer_lowdim_workspace.py
+@@ -10,6 +10,7 @@ if __name__ == "__main__":
+ import os
+ import hydra
+ import torch
++from typing import Optional
+ from omegaconf import OmegaConf
+ import pathlib
+ from torch.utils.data import DataLoader
+@@ -36,8 +37,8 @@ OmegaConf.register_new_resolver("eval", eval, replace=True)
+ class TrainDiffusionTransformerLowdimWorkspace(BaseWorkspace):
+     include_keys = ['global_step', 'epoch']
+ 
+-    def __init__(self, cfg: OmegaConf):
+-        super().__init__(cfg)
++    def __init__(self, cfg: OmegaConf, output_dir: Optional[str] = None):
++        super().__init__(cfg, output_dir=output_dir)
+ 
+         # set seed
+         seed = cfg.training.seed
+diff --git a/setup.py b/setup.py
+index ca8a70c371c25a1ad57a4c48bd1cb6939cea54d2..188a59b591af4a509098bbf6a1866e298b4572c2 100644
+--- a/setup.py
++++ b/setup.py
+@@ -1,6 +1,6 @@
+-from setuptools import setup, find_packages
++from setuptools import setup, find_namespace_packages
+ 
+ setup(
+   name = 'diffusion_policy',
+-  packages = find_packages(),
++  packages = find_namespace_packages(),
+ )
