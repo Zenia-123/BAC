@@ -1,6 +1,6 @@
 # P1：Lowdim Transformer FP16 AMP 开关
 
-日期：2026-10-17（Asia/Shanghai）。实现与本阶段推理验收通过；用户最终选择 B（现有 BAC 仓库保存完整 patch 与恢复脚本）。源码恢复测试通过，正在完成主仓库 Git 交付；没有进入 P2。
+日期：2026-10-17（Asia/Shanghai）。P1 实现、推理验收与方案 B 的远程源码恢复验证均通过，功能提交已推送至 BAC 功能分支；没有进入 P2。
 
 ## 改动与调用关系
 
@@ -118,4 +118,22 @@ help 可单独复查：
 
 方案 B 的准确恢复命令见 `patches/diffusion_policy/README.md`。本机子模块保留在安全提交 `386b7de`，所以主仓库 status 仍可能标记子模块提交不同；这不表示漏交付，远程固定 gitlink 加完整 patch 才是恢复依据。用户原有 `lowdim_fp16.md` 保留未提交。
 
-下一步是推送主仓库功能分支，并在全新远程克隆中验证子模块初始化和 patch 恢复；完成后停止，等待确认进入 P2。
+## 远程交付与恢复记录
+
+- 功能提交：`e04e7b28be69cac75a3e44ff850916760d1f4b5d`，`feat: add opt-in lowdim AMP inference precision`。
+- 已成功推送到 `git@github.com:Zenia-123/BAC.git` 的 `feature/lowdim_fp16` 分支；只读 ls-remote 返回同一完整 SHA。
+- 主仓库 gitlink 仍为公开的 `5ba07ac6661db573af695b419a7947ecb704690f`；未向子模块上游推送，也不依赖本机安全提交 `386b7de` 的远程可见性。
+- 第一次普通递归克隆遇到网络慢，在 55 秒上限内未完成；不将其算作恢复通过。随后在另一个全新目录执行浅递归克隆，退出 0。继承已有本机 HTTPS 镜像配置，未改全局配置或共享 `.gitmodules`。
+- 远程克隆位置：`/tmp/bac-p1-remote-shallow-46fudsmj/BAC`；完整记录 `.git/p1-validation/remote-restore.log`、`remote-clone-retry.log`、`remote-cli-help.log`。
+
+成功验证的克隆命令：
+
+```bash
+git clone --depth 1 --single-branch --branch feature/lowdim_fp16 --recurse-submodules --shallow-submodules git@github.com:Zenia-123/BAC.git <新目录>
+```
+
+新目录内先执行恢复脚本的 `--check`（不改文件），然后实际应用，再执行一次 `--check`。结果：patch 可以应用，全部 7 个目标文件 SHA-256 与实际模型验收源码一致；重复检查识别已应用，不修改文件；LICENSE 保持原样。使用已有 bac 解释器并将 PYTHONPATH 指向新克隆源码，CLI `--help` 退出 0，显示 `--precision [fp32|fp16_amp]`。
+
+上述远程克隆验证针对功能提交 `e04e7b2`；此后的报告更新仅补充交付记录，不改变模型、评估或恢复代码。
+
+P1 到此停止，等待用户确认进入 P2。
