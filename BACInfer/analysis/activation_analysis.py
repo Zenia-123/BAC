@@ -9,8 +9,8 @@ from typing import Dict, List, Optional, Any, Union, Tuple
 logger = logging.getLogger(__name__)
 
 def wasserstein_distance_torch(x: torch.Tensor, y: torch.Tensor) -> float:
-    x = torch.abs(x.flatten())
-    y = torch.abs(y.flatten())
+    x = torch.abs(x.float().flatten())
+    y = torch.abs(y.float().flatten())
     
     x = x / (torch.sum(x) + 1e-8)
     y = y / (torch.sum(y) + 1e-8)
@@ -25,8 +25,8 @@ def wasserstein_distance_torch(x: torch.Tensor, y: torch.Tensor) -> float:
     return wasserstein_dist
 
 def compute_similarity_metrics(act_i: torch.Tensor, act_j: torch.Tensor) -> Dict[str, float]:
-    act_i = act_i.flatten()
-    act_j = act_j.flatten()
+    act_i = act_i.float().flatten()
+    act_j = act_j.float().flatten()
     
     mse = torch.mean((act_i - act_j) ** 2).item()
     cos_sim = torch.nn.functional.cosine_similarity(act_i.unsqueeze(0), act_j.unsqueeze(0)).item()
@@ -43,8 +43,8 @@ def compute_similarity_metrics(act_i: torch.Tensor, act_j: torch.Tensor) -> Dict
     }
 
 def compute_temporal_metrics(current: torch.Tensor, previous: torch.Tensor) -> Dict[str, float]:
-    current = current.flatten()
-    previous = previous.flatten()
+    current = current.float().flatten()
+    previous = previous.float().flatten()
     
     mse = torch.mean((current - previous) ** 2).item()
     cos_sim = torch.nn.functional.cosine_similarity(

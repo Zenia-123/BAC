@@ -38,15 +38,20 @@ def get_optimal_cache_update_steps(
     demo_idx: int = 0,
     force_recompute: bool = False,
     metrics: List[str] = None,
-    num_caches_list: List[int] = None
+    num_caches_list: List[int] = None,
+    precision: str = 'fp32'
 ) -> Dict[str, Dict[str, Dict[str, List[int]]]]:
-    output_dir = Path(output_dir)
+    root_output_dir = Path(output_dir)
+    output_dir = root_output_dir if precision == 'fp32' else root_output_dir / precision
     output_dir.mkdir(parents=True, exist_ok=True)
+    torch.set_num_threads(1)
+    metrics = metrics or ['cosine']
+    num_caches_list = num_caches_list or [5]
     activations_path = output_dir /'original'/'activations.pkl'
     if not activations_path.exists() or force_recompute:
         logger.info(f"Collecting activations...")
-        task_name = output_dir.name
-        output_base_dir = str(output_dir.parent)
+        task_name = root_output_dir.name
+        output_base_dir = str(root_output_dir.parent)
         collect_activations(
             checkpoint=checkpoint,
             output_base_dir=output_base_dir,
@@ -54,10 +59,12 @@ def get_optimal_cache_update_steps(
             device=device,
             demo_idx=demo_idx,
             force_recompute=force_recompute,
-            cache_mode='original'
+            cache_mode='original', precision=precision
         )
         logger.info(f"Activations saved to {activations_path}")
     else:
+        from BACInfer.core.precision import calibration_metadata, check_calibration
+        check_calibration(activations_path.parent, precision, calibration_metadata(checkpoint, precision))
         logger.info(f"Found existing activation file: {activations_path}")
 
 
@@ -126,7 +133,7 @@ def get_optimal_cache_update_steps(
                 for num_caches in num_caches_list:
                     # Build cache step file path
                     cache_filename = f"optimal_steps_{module_name}_{num_caches}_{metric}.pkl"
-                    cache_path = output_dir / 'optimal_steps'/ metric / module_name / cache_filename
+                    cache_path = output_dir / 'original' / 'optimal_steps'/ metric / module_name / cache_filename
 
                     if not cache_path.exists() or force_recompute:
                         logger.info(f"Computing optimal cache steps: module={module_name}, metric={metric}, num_caches={num_caches}")
@@ -165,8 +172,9 @@ def get_optimal_cache_update_steps(
 @click.option('--force_recompute', is_flag=True)
 @click.option('--metrics', default='cosine,l1,mse')
 @click.option('--num_caches', default='5,8,10,20')
+@click.option('--precision', default='fp32', type=click.Choice(['fp32', 'decoder_fp16_strict']))
 
-def main(checkpoint, output_dir, device, demo_idx, force_recompute, metrics, num_caches):
+def main(checkpoint, output_dir, device, demo_idx, force_recompute, metrics, num_caches, precision):
     """Compute optimal cache steps for dropout modules in decoder.layers"""
     # Parse metrics string to list
     metrics_list = metrics.split(',') if metrics else None
@@ -182,7 +190,7 @@ def main(checkpoint, output_dir, device, demo_idx, force_recompute, metrics, num
         demo_idx=demo_idx,
         force_recompute=force_recompute,
         metrics=metrics_list,
-        num_caches_list=num_caches_list
+        num_caches_list=num_caches_list, precision=precision
     )
 
     # Output analysis results summary
@@ -204,8 +212,8 @@ def main(checkpoint, output_dir, device, demo_idx, force_recompute, metrics, num
 
                 # Display viewable file paths
                 cache_filename = f"optimal_steps_{module_name}_{num_caches}_{metric}"
-                txt_path = os.path.join(output_dir, 'optimal_steps', metric, module_name, f"{cache_filename}.txt")
-                json_path = os.path.join(output_dir, 'optimal_steps', metric, module_name, f"{cache_filename}.json")
+                txt_path = os.path.join(output_dir, 'original', 'optimal_steps', metric, module_name, f"{cache_filename}.txt")
+                json_path = os.path.join(output_dir, 'original', 'optimal_steps', metric, module_name, f"{cache_filename}.json")
 
                 if os.path.exists(txt_path):
                     logger.info(f"      View TXT file: {txt_path}")

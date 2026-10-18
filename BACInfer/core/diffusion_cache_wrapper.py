@@ -29,6 +29,8 @@ class FastDiffusionPolicy:
         if cache_mode == 'original':
             logger.info("Using original mode, no caching applied")
             return policy
+        if cache_mode == 'optimal' and not optimal_steps_dir:
+            raise ValueError('Optimal caching requires an optimal_steps_dir.')
 
         assert hasattr(policy, 'model')
         model = policy.model
@@ -152,6 +154,15 @@ class FastDiffusionPolicy:
         steps_dir = Path(optimal_steps_dir)
         assert steps_dir.exists(), f"Optimal steps directory {optimal_steps_dir} does not exist"
 
+        from BACInfer.core.precision import check_calibration
+        calibration_dir = next((parent for parent in (steps_dir, *steps_dir.parents)
+                                if (parent / 'activations.pkl').is_file()), None)
+        precision = getattr(layers[0][1], '_inference_precision', 'fp32')
+        if calibration_dir is not None:
+            check_calibration(calibration_dir, precision)
+        elif precision != 'fp32':
+            raise ValueError('Strict ACS requires matching calibration with precision.json.')
+
         block_steps = {}
 
         for layer_name, layer in layers:
@@ -183,127 +194,55 @@ class FastDiffusionPolicy:
                 block_steps[ff_block_key] = steps
                 logger.info(f"Loaded steps for feedforward block {ff_block_key}: {steps}")
 
+        expected = {f'{name}_{kind}' for name, _ in layers
+                    for kind in ('sa_block', 'mha_block', 'ff_block')}
+        missing = expected - block_steps.keys()
+        if missing:
+            raise ValueError(f'Missing ACS schedules in {steps_dir}: {sorted(missing)}')
+        for name, steps in block_steps.items():
+            if (len(steps) != num_caches or not steps or steps[0] != 0
+                    or list(steps) != sorted(set(steps))
+                    or any(int(step) != step or not 0 <= step < cache['num_steps'] for step in steps)):
+                raise ValueError(f'Invalid ACS schedule for {name}: {steps}')
+
+        cache['bu_blocks'] = []
+        cache['bu_added_updates'] = 0
         if cache.get('num_bu_blocks', 0) > 0:
-            logger.info("Applying BU (Bubbling Union) algorithm for step propagation")
+            from BACInfer.analysis.bu_block_selection import analyze_block_errors
+            # Locate the calibration that actually owns these schedule files.
+            calibration_dir = next((parent for parent in (steps_dir, *steps_dir.parents)
+                                    if (parent / 'activations.pkl').is_file()), None)
+            if calibration_dir is None:
+                raise FileNotFoundError(
+                    f'BUA requires activations.pkl above {steps_dir}; run calibration first.')
+            selected = analyze_block_errors(
+                str(calibration_dir / 'activations.pkl'),
+                str(calibration_dir / 'bu_block_selection'), cache['num_bu_blocks'])
+            bu_blocks = [name for name, _ in selected]
+            if len(bu_blocks) != cache['num_bu_blocks'] or not set(bu_blocks) <= expected:
+                raise ValueError(f'Invalid BUA selection: {bu_blocks}')
+            cache['bu_blocks'] = bu_blocks
 
-            bu_blocks = cache.get('bu_blocks', None)
+            def layer_index(name):
+                return int(re.match(r'decoder\.layers\.(\d+)_', name).group(1))
 
-            if bu_blocks is None:
-                try:
-                    from BACInfer.analysis.bu_block_selection import (
-                        analyze_block_errors,
-                    )
+            def priority(name):
+                return {'sa_block': 0, 'mha_block': 1, 'ff_block': 2}[name.split('_', 1)[1]]
 
-                    if optimal_steps_dir:
-                        steps_path = Path(optimal_steps_dir)
-                        if "optimal_steps" in str(steps_path):
-                            base_path = steps_path.parent.parent
-                            output_base_dir = str(base_path.parent)
-                            task_name = base_path.name.split('/')[0]
-                            logger.info(f"Derived base directory from optimal_steps_dir: output_base_dir={output_base_dir}, task={task_name}")
-                        else:
-                            logger.info("Cannot derive base directory from optimal_steps_dir")
-                    else:
-                        logger.info("optimal_steps_dir not provided")
-
-                    num_blocks = cache.get('num_bu_blocks', 3)
-
-                    bu_analysis_dir = f"{output_base_dir}/{task_name}/bu_block_selection"
-                    analysis_output_dir = Path(bu_analysis_dir)
-                    logger.info(f"BU analysis output directory: {analysis_output_dir}")
-
-                    selected_path = analysis_output_dir / f'top_{num_blocks}_error_blocks.pkl'
-
-                    if selected_path.exists():
-                        with open(selected_path, 'rb') as f:
-                            selected_blocks_dict = pickle.load(f)
-                            bu_blocks = list(selected_blocks_dict.keys())
-                            logger.info(f"Loaded {len(bu_blocks)} high-error blocks for BU: {bu_blocks}")
-                    else:
-                        # If file doesn't exist, compute from activations
-                        activations_path = Path(f"{output_base_dir}/{task_name}/activations.pkl")
-                        if activations_path.exists():
-                            logger.info("Computing high-error blocks for BU algorithm...")
-                            analysis_output_dir.mkdir(parents=True, exist_ok=True)
-                            selected_blocks = analyze_block_errors(str(activations_path), str(analysis_output_dir), num_blocks)
-                            bu_blocks = [block for block, _ in selected_blocks]
-                            logger.info(f"Computed {len(bu_blocks)} high-error blocks for BU: {bu_blocks}")
-                        else:
-                            logger.warning(f"Activation file not found: {activations_path}, cannot apply BU")
-                            bu_blocks = []
-                except Exception as e:
-                    logger.warning(f"Error loading/computing high-error blocks: {e}")
-                    logger.warning(f"Cannot apply BU algorithm")
-                    bu_blocks = []
-
-            if len(bu_blocks) > 1:
-                def get_layer_idx(block_key):
-                    match = re.match(r'decoder\.layers\.(\d+)_([a-z_]+)', block_key)
-                    if match:
-                        return int(match.group(1))
-                    return -1
-
-                def get_block_type_priority(block_key):
-                    match = re.match(r'decoder\.layers\.\d+_([a-z_]+)', block_key)
-                    if match:
-                        block_type = match.group(1)
-                        priorities = {'sa_block': 0, 'mha_block': 1, 'ff_block': 2}
-                        return priorities.get(block_type, 10)
-                    return 10
-
-                def get_block_type(block_key):
-                    match = re.match(r'decoder\.layers\.\d+_([a-z_]+)', block_key)
-                    if match:
-                        return match.group(1)
-                    return ""
-
-                sorted_bu_blocks = sorted(bu_blocks, key=lambda x: (get_layer_idx(x), get_block_type_priority(x)))
-                logger.info(f"BU: Sorted blocks: {sorted_bu_blocks}")
-
-                all_ffn_blocks = []
-                for block_key in block_steps.keys():
-                    if get_block_type(block_key) == 'ff_block':
-                        all_ffn_blocks.append(block_key)
-
-                sorted_all_ffn_blocks = sorted(all_ffn_blocks, key=lambda x: get_layer_idx(x))
-                logger.info(f"Phase 1, BU: All FFN blocks (sorted by layer): {sorted_all_ffn_blocks}")
-
-                for i, block_key in enumerate(sorted_bu_blocks):
-                    block_layer_idx = get_layer_idx(block_key)
-
-                    deeper_ffn_blocks = []
-                    for ffn_block in sorted_all_ffn_blocks:
-                        ffn_layer_idx = get_layer_idx(ffn_block)
-                        if ffn_layer_idx >= block_layer_idx:
-                            deeper_ffn_blocks.append(ffn_block)
-
-                    if deeper_ffn_blocks:
-                        logger.info(f"BU: For block {block_key} (layer {block_layer_idx}), found deeper FFN blocks: {deeper_ffn_blocks}")
-
-                        all_deeper_steps = set()
-                        for deeper_ffn_block in deeper_ffn_blocks:
-                            if deeper_ffn_block in block_steps:
-                                all_deeper_steps.update(block_steps[deeper_ffn_block])
-
-                        if block_key in block_steps and all_deeper_steps:
-                            current_steps = set(block_steps[block_key])
-                            missing_steps = all_deeper_steps - current_steps
-
-                            if missing_steps:
-                                updated_steps = sorted(list(current_steps.union(missing_steps)))
-                                block_steps[block_key] = updated_steps
-                                logger.info(f"BU: Added missing steps to {block_key}: {sorted(list(missing_steps))}. New steps: {updated_steps}")
-
-            else:
-                logger.info("BU: Insufficient blocks for propagation (need at least 2)")
-
-            logger.info("\n===== BU Algorithm Summary =====" )
-            logger.info(f"Total BU blocks processed: {len(bu_blocks)}")
-
-            for block_key in sorted(bu_blocks, key=lambda x: (get_layer_idx(x), get_block_type_priority(x))):
-                if block_key in block_steps:
-                    steps_count = len(block_steps[block_key])
-                    logger.info(f"  Block {block_key}: {steps_count} steps")
+            # Preserve the original same-layer/deeper-layer FFN union rule.
+            ffn_blocks = sorted((name for name in block_steps if name.endswith('_ff_block')),
+                                key=layer_index)
+            for name in sorted(bu_blocks, key=lambda key: (layer_index(key), priority(key))):
+                union = set()
+                for ffn in ffn_blocks:
+                    if layer_index(ffn) >= layer_index(name):
+                        union.update(block_steps[ffn])
+                extra = union - set(block_steps[name])
+                block_steps[name] = sorted(set(block_steps[name]) | union)
+                cache['bu_added_updates'] += len(extra - {cache['num_steps'] - 1})
+                logger.info('BU: Added updates to %s: %s', name, sorted(extra))
+            logger.info('BUA applied to %s; additional updates=%s',
+                        bu_blocks, cache['bu_added_updates'])
 
         cache['block_steps'] = block_steps
         logger.info(f"Loaded optimal steps for {len(block_steps)} computational blocks")
@@ -327,7 +266,7 @@ class FastDiffusionPolicy:
                         steps_lookup[block_key] = set()
                     else:
                         steps_lookup[block_key] = set(steps)
-                        steps_lookup[block_key].add(99)
+                        steps_lookup[block_key].add(cache['num_steps'] - 1)
                        
                 cache['steps_lookup'] = steps_lookup
 
@@ -372,31 +311,32 @@ class FastDiffusionPolicy:
                 has_mha_cache = mha_block_key in cache['block_cache'] and not should_cache_mha
                 has_ff_cache = ff_block_key in cache['block_cache'] and not should_cache_ff
 
+                add = getattr(self, '_residual_add', torch.add)
                 x = tgt
 
                 if has_sa_cache:
-                    x = x + cache['block_cache'][sa_block_key]
+                    x = add(x, cache['block_cache'][sa_block_key])
                 else:
                     sa_result = self._sa_block(self.norm1(x), tgt_mask, tgt_key_padding_mask)
                     if should_cache_sa:
                         cache['block_cache'][sa_block_key] = sa_result.detach()
-                    x = x + sa_result
+                    x = add(x, sa_result)
 
                 if has_mha_cache:
-                    x = x + cache['block_cache'][mha_block_key]
+                    x = add(x, cache['block_cache'][mha_block_key])
                 else:
                     mha_result = self._mha_block(self.norm2(x), memory, memory_mask, memory_key_padding_mask)
                     if should_cache_mha:
                         cache['block_cache'][mha_block_key] = mha_result.detach()
-                    x = x + mha_result
+                    x = add(x, mha_result)
 
                 if has_ff_cache:
-                    x = x + cache['block_cache'][ff_block_key]
+                    x = add(x, cache['block_cache'][ff_block_key])
                 else:
                     ff_result = self._ff_block(self.norm3(x))
                     if should_cache_ff:
                         cache['block_cache'][ff_block_key] = ff_result.detach()
-                    x = x + ff_result
+                    x = add(x, ff_result)
 
                 return x
         else:

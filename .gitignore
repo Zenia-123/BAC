@@ -20,6 +20,7 @@ CLAUDE.md
 
 *.ai
 *.txt
+!requirements-lowdim-fp32.txt
 *.hdf5
 
 checkpoint/*
@@ -192,3 +193,6 @@ dmypy.json
 *.jsonl.zip
 *.jsonl.tar
 *.jsonl.gz
+
+# Generated PTX/cubin/SASS instruction audit artifacts.
+**/kernel_audit/

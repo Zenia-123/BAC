@@ -49,8 +49,8 @@ def compute_block_l1_errors(original_activations, cached_activations=None):
         if cached_activations is None:
             for i in range(num_timesteps):
                 for j in range(i+1, num_timesteps):
-                    act_i = activations[i]
-                    act_j = activations[j]
+                    act_i = activations[i].float()
+                    act_j = activations[j].float()
                     
                     if act_i.shape != act_j.shape:
                         continue
@@ -63,8 +63,8 @@ def compute_block_l1_errors(original_activations, cached_activations=None):
                 min_timesteps = min(num_timesteps, len(cached_acts))
                 
                 for t in range(min_timesteps):
-                    orig_act = activations[t]
-                    cache_act = cached_acts[t]
+                    orig_act = activations[t].float()
+                    cache_act = cached_acts[t].float()
                     
                     if orig_act.shape != cache_act.shape:
                         continue

@@ -8,8 +8,6 @@ import torch
 import torch.backends.cudnn as cudnn
 root_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.path.append(root_dir)
-sys.stdout = open(sys.stdout.fileno(), mode='w', buffering=1)
-sys.stderr = open(sys.stderr.fileno(), mode='w', buffering=1)
 
 import pathlib
 import click
@@ -53,7 +51,8 @@ def run_policy(
     interpolation_ratio=1.0,
     reference_activations_path=None,
     return_obs_action=False,
-    random_seed=11
+    random_seed=11,
+    precision='fp32'
 ):
     # Set random seed
     set_seed_for_policy(random_seed)
@@ -68,16 +67,17 @@ def run_policy(
 
     # Initialize workspace
     cls = hydra.utils.get_class(cfg._target_)
-    workspace = cls(cfg, output_dir=str(output_dir))
+    workspace = cls(cfg)
     workspace.load_payload(payload, exclude_keys=None, include_keys=None)
 
     # Get policy model
     device = torch.device(device)
+    # Match eval_fast_diffusion_policy: calibrate the same checkpoint weights.
     policy = workspace.model
-    if hasattr(cfg.training, 'use_ema') and cfg.training.use_ema:
-        policy = workspace.ema_model
     policy.to(device)
     policy.eval()
+    from BACInfer.core.precision import set_policy_precision
+    set_policy_precision(policy, precision)
 
     # Apply cache acceleration
     if cache_mode != 'original':
@@ -116,9 +116,8 @@ def run_policy(
         cache_params['num_bu_blocks'] = num_bu_blocks
 
         # Add interpolation parameters
-        cache_params['interpolation_ratio'] = interpolation_ratio
-        if reference_activations_path:
-            cache_params['reference_activations_path'] = reference_activations_path
+        if interpolation_ratio != 1.0 or reference_activations_path:
+            raise ValueError('The cache wrapper does not support interpolation.')
 
         # Apply caching
         policy = FastDiffusionPolicy.apply_cache(policy, **cache_params)
@@ -152,10 +151,12 @@ def run_policy(
 
     env = env_runner.env
     this_init_fns = [env_runner.env_init_fn_dills[0 if demo_idx < 10000 else -1]]
-    env.call_each('run_dill_function', args_list=[(x,) for x in this_init_fns])
-
-    # Reset environment
-    obs = env.reset()
+    try:
+        env.call_each('run_dill_function', args_list=[(x,) for x in this_init_fns])
+        obs = env.reset()
+    finally:
+        # Calibration needs one initial observation, not a live worker process.
+        env.close()
     policy.reset()
 
     # If using cache, ensure cache policy is reset
@@ -219,10 +220,11 @@ def run_policy(
 @click.option('--interpolation_ratio', default=1.0, type=float)
 @click.option('--reference_activations_path', default=None)
 @click.option('--random_seed', default=11, type=int)
+@click.option('--precision', default='fp32', type=click.Choice(['fp32', 'decoder_fp16_strict']))
 def main(checkpoint, output_dir, device, demo_idx,
          cache_mode, cache_threshold, optimal_steps_dir,
          num_caches, metric, num_bu_blocks, edit_steps,
-         interpolation_ratio, reference_activations_path, random_seed):
+         interpolation_ratio, reference_activations_path, random_seed, precision):
 
     # Process edit_steps parameter
     processed_edit_steps = None
@@ -236,7 +238,7 @@ def main(checkpoint, output_dir, device, demo_idx,
         num_caches, metric, num_bu_blocks,
         processed_edit_steps, interpolation_ratio, reference_activations_path,
         return_obs_action=True,
-        random_seed=random_seed
+        random_seed=random_seed, precision=precision
     )
 
     # Transfer back to CPU
@@ -253,4 +255,4 @@ def main(checkpoint, output_dir, device, demo_idx,
     return action
 
 if __name__ == '__main__':
-    main() 
+    main()

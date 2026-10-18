@@ -1,0 +1,5 @@
+# Preserve whitespace in the upstream source snapshot during submodule import.
+diffusion_policy/** -whitespace
+# Locally added implementation and provenance still use normal whitespace checks.
+diffusion_policy/diffusion_policy/model/diffusion/strict_fp16.py whitespace=blank-at-eol,blank-at-eof,space-before-tab
+diffusion_policy/VENDORED.md whitespace=blank-at-eol,blank-at-eof,space-before-tab

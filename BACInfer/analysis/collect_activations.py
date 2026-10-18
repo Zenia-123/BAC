@@ -142,7 +142,8 @@ def collect_activations(
     edit_steps=None,
     interpolation_ratio=1.0,
     reference_activations_path=None,
-    random_seed=DEFAULT_RANDOM_SEED
+    random_seed=DEFAULT_RANDOM_SEED,
+    precision='fp32'
 ):
     if random_seed is not None:
         logger.info(f"Setting random seed to {random_seed}")
@@ -172,11 +173,18 @@ def collect_activations(
     if interpolation_ratio < 1.0 and reference_activations_path:
         cache_dir_name = f"{cache_dir_name}_interp_{interpolation_ratio:.2f}"
     
-    output_dir = output_base_dir / task_name / cache_dir_name
+    output_dir = output_base_dir / task_name
+    if precision != 'fp32':
+        output_dir = output_dir / precision
+    output_dir = output_dir / cache_dir_name
     output_dir.mkdir(parents=True, exist_ok=True)
     
+    from BACInfer.core.precision import calibration_metadata, check_calibration
+    import json
+    metadata = calibration_metadata(checkpoint, precision)
     save_path = output_dir / 'activations.pkl'
     if save_path.exists() and not force_recompute:
+        check_calibration(output_dir, precision, expected=metadata)
         logger.info(f"Found existing activation file: {save_path}")
         try:
             with open(save_path, 'rb') as f:
@@ -214,7 +222,7 @@ def collect_activations(
         edit_steps=edit_steps,
         interpolation_ratio=interpolation_ratio,
         reference_activations_path=reference_activations_path,
-        random_seed=random_seed
+        random_seed=random_seed, precision=precision
     )
     
     if cache_mode != 'original':
@@ -270,16 +278,23 @@ def collect_activations(
     import types
     target_model.forward = types.MethodType(patched_forward, target_model)
     
-    with torch.no_grad():
-        if cache_mode != 'original' and hasattr(policy, 'reset_cache'):
-            policy.reset_cache()
-        action_dict = policy.predict_action(obs_dict)
-    
-    collector.handle_step_completion()
-    collector.save_activations(save_path)
-    
-    collector.remove_hooks()
-    target_model.forward = original_model_forward
+    try:
+        set_global_seed(random_seed)
+        with torch.no_grad():
+            if cache_mode != 'original' and hasattr(policy, 'reset_cache'):
+                policy.reset_cache()
+            policy.predict_action(obs_dict)
+        collector.handle_step_completion()
+        if any(not torch.isfinite(tensor).all() for values in collector.activations.values() for tensor in values):
+            raise RuntimeError('Nonfinite calibration features; no schedule will be generated.')
+        collector.save_activations(save_path)
+        (output_dir / 'precision.json').write_text(json.dumps(metadata, indent=2))
+        if precision != 'fp32':
+            from diffusion_policy.model.diffusion.strict_fp16 import export_kernel_audit
+            export_kernel_audit(output_dir / 'kernel_audit')
+    finally:
+        collector.remove_hooks()
+        target_model.forward = original_model_forward
     
     logger.info(f"Activation collection complete, saved to: {save_path}")
     return collector.get_activations()
@@ -307,7 +322,11 @@ def get_activations_path(output_base_dir, task_name, cache_mode, **kwargs):
     if interpolation_ratio < 1.0 and kwargs.get("reference_activations_path"):
         cache_dir_name = f"{cache_dir_name}_interp_{interpolation_ratio:.2f}"
     
-    return output_base_dir / task_name / cache_dir_name / 'activations.pkl'
+    precision = kwargs.get('precision', 'fp32')
+    base = output_base_dir / task_name
+    if precision != 'fp32':
+        base = base / precision
+    return base / cache_dir_name / 'activations.pkl'
 
 if __name__ == '__main__':
     import click
@@ -330,9 +349,10 @@ if __name__ == '__main__':
     @click.option('--interpolation_ratio', default=1.0, type=float)
     @click.option('--reference_activations_path', default=None)
     @click.option('--random_seed', default=DEFAULT_RANDOM_SEED, type=int)
+    @click.option('--precision', default='fp32', type=click.Choice(['fp32', 'decoder_fp16_strict']))
     def main(checkpoint, output_base_dir, task_name, device, demo_idx, force,
              cache_mode, cache_threshold, optimal_steps_dir, num_caches, metric,
-             bu, edit_steps, interpolation_ratio, reference_activations_path, random_seed):
+             bu, edit_steps, interpolation_ratio, reference_activations_path, random_seed, precision):
       
         
         set_global_seed(random_seed)
@@ -357,9 +377,9 @@ if __name__ == '__main__':
             edit_steps=processed_edit_steps,
             interpolation_ratio=interpolation_ratio,
             reference_activations_path=reference_activations_path,
-            random_seed=random_seed
+            random_seed=random_seed, precision=precision
         )
     
 
     set_global_seed(DEFAULT_RANDOM_SEED)
-    main() 
+    main()
